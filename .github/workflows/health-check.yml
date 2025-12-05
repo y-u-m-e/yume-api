@@ -1,0 +1,55 @@
+name: Health Check
+
+on:
+  # Run every 5 minutes
+  schedule:
+    - cron: '*/5 * * * *'
+  # Allow manual trigger
+  workflow_dispatch:
+
+jobs:
+  health-check:
+    name: Check API Health
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Production API
+        id: prod-check
+        run: |
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" https://api.itai.gg/health)
+          echo "Production status: $RESPONSE"
+          if [ "$RESPONSE" != "200" ]; then
+            echo "❌ Production API is down! Status: $RESPONSE"
+            echo "prod_healthy=false" >> $GITHUB_OUTPUT
+          else
+            echo "✅ Production API is healthy"
+            echo "prod_healthy=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check Staging API
+        id: staging-check
+        continue-on-error: true
+        run: |
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" https://api-staging.itai.gg/health)
+          echo "Staging status: $RESPONSE"
+          if [ "$RESPONSE" != "200" ]; then
+            echo "⚠️ Staging API is down! Status: $RESPONSE"
+            echo "staging_healthy=false" >> $GITHUB_OUTPUT
+          else
+            echo "✅ Staging API is healthy"
+            echo "staging_healthy=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check CDN Proxy
+        run: |
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" https://api.itai.gg/cdn/nav-bar.js)
+          echo "CDN Proxy status: $RESPONSE"
+          if [ "$RESPONSE" != "200" ]; then
+            echo "⚠️ CDN Proxy might have issues! Status: $RESPONSE"
+          else
+            echo "✅ CDN Proxy is healthy"
+          fi
+
+      - name: Fail if production is down
+        if: steps.prod-check.outputs.prod_healthy == 'false'
+        run: exit 1
+

@@ -1,0 +1,68 @@
+name: Database Backup
+
+on:
+  # Run daily at 2 AM UTC
+  schedule:
+    - cron: '0 2 * * *'
+  # Allow manual trigger
+  workflow_dispatch:
+
+env:
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+jobs:
+  backup:
+    name: Backup D1 Database
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Create backup directory
+        run: mkdir -p backups
+
+      - name: Export D1 Database
+        run: |
+          DATE=$(date +%Y-%m-%d_%H-%M-%S)
+          npx wrangler d1 export event_tracking --output=backups/backup_${DATE}.sql
+          echo "BACKUP_FILE=backups/backup_${DATE}.sql" >> $GITHUB_ENV
+          echo "BACKUP_DATE=${DATE}" >> $GITHUB_ENV
+
+      - name: Upload backup to R2
+        run: |
+          npx wrangler r2 object put yume-backups/db-backups/${{ env.BACKUP_DATE }}.sql --file=${{ env.BACKUP_FILE }}
+
+      - name: Upload backup as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: database-backup-${{ env.BACKUP_DATE }}
+          path: ${{ env.BACKUP_FILE }}
+          retention-days: 30
+
+      - name: Cleanup old backups (keep last 30)
+        run: |
+          echo "Listing backups in R2..."
+          npx wrangler r2 object list yume-backups --prefix=db-backups/ | head -n -30 | while read -r line; do
+            KEY=$(echo "$line" | awk '{print $1}')
+            if [ ! -z "$KEY" ]; then
+              echo "Deleting old backup: $KEY"
+              npx wrangler r2 object delete yume-backups/$KEY || true
+            fi
+          done
+        continue-on-error: true
+
+      - name: Notify completion
+        run: |
+          echo "✅ Backup completed: ${{ env.BACKUP_FILE }}"
+          echo "📦 Stored in R2: yume-backups/db-backups/${{ env.BACKUP_DATE }}.sql"
+

@@ -4,44 +4,68 @@
  */
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "discord-webhook-relay",
+	"name": "yume-api",
 	"main": "src/index.js",
 	"compatibility_date": "2025-05-21",
 	"observability": {
 		"enabled": true
+	},
+	"routes": [
+		{
+			"pattern": "api.itai.gg",
+			"custom_domain": true
+		}
+	],
+	"d1_databases": [
+		{
+			"binding": "EVENT_TRACK_DB",
+			"database_name": "event_tracking",
+			"database_id": "91a4523b-99e5-49df-9456-b0aa69bbdb1a"
+		}
+	],
+	// R2 bucket for backups (enable R2 in Cloudflare dashboard first, then uncomment)
+	// "r2_buckets": [
+	// 	{
+	// 		"binding": "BACKUPS",
+	// 		"bucket_name": "yume-backups"
+	// 	}
+	// ],
+	"vars": {
+		"ENVIRONMENT": "production",
+		"SHA_CRUDDY_PANEL": "37d31d0fa06ea533e2695875590d38a4a0a09500",
+		"SHA_EVENT_PARSER": "12284df8ae8659d0c99f96b4df2b928786d53465",
+		"SHA_MENTION_WIDGET": "12284df8ae8659d0c99f96b4df2b928786d53465",
+		"SHA_NAV_BAR": "0344053",
+		"DISCORD_CLIENT_ID": "1446582844553035918",
+		"DISCORD_REDIRECT_URI": "https://api.itai.gg/auth/callback",
+		"ALLOWED_USER_IDS": "166201366228762624, 667951474856427520, 402576224800473098"
+	},
+
+	/**
+	 * ========================================
+	 * STAGING ENVIRONMENT
+	 * Deploy with: npx wrangler deploy --env staging
+	 * ========================================
+	 */
+	"env": {
+		"staging": {
+			"name": "yume-api-staging",
+			"routes": [
+				{
+					"pattern": "api-staging.itai.gg",
+					"custom_domain": true
+				}
+			],
+			"vars": {
+				"ENVIRONMENT": "staging",
+				"SHA_CRUDDY_PANEL": "main",
+				"SHA_EVENT_PARSER": "main",
+				"SHA_MENTION_WIDGET": "main",
+				"SHA_NAV_BAR": "main",
+				"DISCORD_CLIENT_ID": "1446582844553035918",
+				"DISCORD_REDIRECT_URI": "https://api-staging.itai.gg/auth/callback",
+				"ALLOWED_USER_IDS": "166201366228762624, 667951474856427520, 402576224800473098"
+			}
+		}
 	}
-	/**
-	 * Smart Placement
-	 * Docs: https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
-	 */
-	// "placement": { "mode": "smart" },
-
-	/**
-	 * Bindings
-	 * Bindings allow your Worker to interact with resources on the Cloudflare Developer Platform, including
-	 * databases, object storage, AI inference, real-time communication and more.
-	 * https://developers.cloudflare.com/workers/runtime-apis/bindings/
-	 */
-
-	/**
-	 * Environment Variables
-	 * https://developers.cloudflare.com/workers/wrangler/configuration/#environment-variables
-	 */
-	// "vars": { "MY_VARIABLE": "production_value" },
-	/**
-	 * Note: Use secrets to store sensitive data.
-	 * https://developers.cloudflare.com/workers/configuration/secrets/
-	 */
-
-	/**
-	 * Static Assets
-	 * https://developers.cloudflare.com/workers/static-assets/binding/
-	 */
-	// "assets": { "directory": "./public/", "binding": "ASSETS" },
-
-	/**
-	 * Service Bindings (communicate between multiple Workers)
-	 * https://developers.cloudflare.com/workers/wrangler/configuration/#service-bindings
-	 */
-	// "services": [{ "binding": "MY_SERVICE", "service": "my-service" }]
 }
