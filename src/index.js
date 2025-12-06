@@ -305,18 +305,13 @@ export default {
       // SERVER-SIDE PROTECTION: Never send protected content to unauthorized users
       // If requesting a protected markdown file without access, return placeholder
       if (isProtectedPage && !canAccessDocs && filePath.endsWith(".md")) {
-        const loginUrl = `${url.origin}/auth/login?return_url=${encodeURIComponent(url.href.replace('.md', ''))}`;
         const placeholder = `# 🔒 Protected Content
 
 This page requires authorized access to view.
 
 ${user ? `**Signed in as:** ${user.username}
 
-You don't have permission to view this content. Contact an administrator if you believe this is an error.
-
-[Sign Out](/auth/logout?return_url=/docs/)` : `Please log in with Discord to view this content.
-
-[Login with Discord](${loginUrl})`}
+You don't have permission to view this content. Contact an administrator if you believe this is an error.` : `Please log in with Discord using the button above.`}
 
 ---
 
