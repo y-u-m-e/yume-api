@@ -34,21 +34,21 @@
     /* User bar styles */
     .docs-user-bar {
       position: fixed;
-      top: 0;
-      right: 0;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
       z-index: 100;
       display: flex;
       align-items: center;
       gap: 12px;
-      padding: 10px 20px;
+      padding: 8px 20px;
       background: linear-gradient(135deg, rgba(20, 60, 60, 0.95) 0%, rgba(25, 50, 80, 0.95) 100%);
-      border-bottom-left-radius: 12px;
+      border-radius: 50px;
       border: 1px solid rgba(94, 234, 212, 0.2);
-      border-top: none;
-      border-right: none;
       backdrop-filter: blur(8px);
       font-family: system-ui, -apple-system, sans-serif;
       font-size: 13px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
     }
     .docs-user-avatar {
       width: 28px;

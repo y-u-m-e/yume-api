@@ -298,100 +298,93 @@ export default {
       const user = token ? verifyToken(token) : null;
       const canAccessDocs = user ? hasAccess(user.userId, allowedUsersDocs) : false;
       
-      // If protected page and not authorized, show access required message
+      // If protected page and not authorized, redirect to no-access page
       if (isProtectedPage && !canAccessDocs) {
         const loginUrl = `${url.origin}/auth/login?return_url=${encodeURIComponent(url.href)}`;
         return new Response(`
           <!DOCTYPE html>
           <html>
           <head>
-            <title>Access Required - Yume Tools Docs</title>
-            <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify-themeable@0/dist/css/theme-simple-dark.min.css">
+            <title>No Access - Yume Tools Docs</title>
             <style>
-              :root {
-                --theme-color: #5eead4;
-                --sidebar-width: 260px;
-              }
-              .sidebar {
-                position: fixed;
-                top: 0;
-                left: 0;
-                width: var(--sidebar-width);
-                height: 100vh;
-                background: #1a1a2e;
-                padding: 20px;
-                box-sizing: border-box;
-                overflow-y: auto;
-                border-right: 1px solid rgba(94, 234, 212, 0.1);
-              }
-              .sidebar h2 { color: #5eead4; font-size: 18px; margin-bottom: 20px; }
-              .sidebar ul { list-style: none; padding: 0; margin: 0; }
-              .sidebar li { margin: 8px 0; }
-              .sidebar a { color: rgba(255,255,255,0.7); text-decoration: none; font-size: 14px; }
-              .sidebar a:hover { color: #5eead4; }
-              .sidebar .section-title { color: rgba(255,255,255,0.5); font-size: 12px; text-transform: uppercase; margin-top: 20px; margin-bottom: 10px; }
-              .main-content {
-                margin-left: var(--sidebar-width);
+              * { margin: 0; padding: 0; box-sizing: border-box; }
+              body { 
+                font-family: system-ui, -apple-system, sans-serif;
+                background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); 
+                color: #fff; 
+                display: flex; 
+                align-items: center; 
+                justify-content: center; 
                 min-height: 100vh;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
               }
-              .box { text-align: center; padding: 50px; background: rgba(255,255,255,0.05); border-radius: 16px; border: 1px solid rgba(94, 234, 212, 0.2); max-width: 400px; }
-              h1 { color: #5eead4; font-size: 24px; margin-bottom: 10px; }
-              .icon { font-size: 48px; margin-bottom: 20px; }
-              p { color: rgba(255,255,255,0.7); line-height: 1.6; font-family: system-ui; }
-              .btn { display: inline-block; margin-top: 20px; padding: 12px 24px; background: linear-gradient(135deg, #5865F2 0%, #4752C4 100%); color: #fff; text-decoration: none; border-radius: 8px; font-weight: 600; transition: all 0.2s; font-family: system-ui; }
-              .btn:hover { transform: translateY(-2px); box-shadow: 0 4px 15px rgba(88, 101, 242, 0.4); }
-              .user-info { margin-top: 20px; padding: 15px; background: rgba(0,0,0,0.2); border-radius: 8px; font-size: 13px; font-family: system-ui; }
-              @media (max-width: 768px) {
-                .sidebar { display: none; }
-                .main-content { margin-left: 0; }
+              .container { text-align: center; padding: 40px; max-width: 420px; }
+              .icon { font-size: 64px; margin-bottom: 24px; }
+              h1 { color: #5eead4; font-size: 28px; margin-bottom: 12px; }
+              p { color: rgba(255,255,255,0.7); line-height: 1.6; margin-bottom: 8px; }
+              .user-box { 
+                margin: 24px 0; 
+                padding: 16px 20px; 
+                background: rgba(255,255,255,0.05); 
+                border-radius: 12px; 
+                border: 1px solid rgba(94, 234, 212, 0.15);
               }
+              .user-box strong { color: #5eead4; }
+              .btn { 
+                display: inline-block; 
+                margin: 8px; 
+                padding: 12px 28px; 
+                text-decoration: none; 
+                border-radius: 8px; 
+                font-weight: 600; 
+                font-size: 14px;
+                transition: all 0.2s; 
+              }
+              .btn-primary { 
+                background: linear-gradient(135deg, #5865F2 0%, #4752C4 100%); 
+                color: #fff; 
+              }
+              .btn-primary:hover { 
+                transform: translateY(-2px); 
+                box-shadow: 0 6px 20px rgba(88, 101, 242, 0.4); 
+              }
+              .btn-secondary { 
+                background: rgba(255,255,255,0.1); 
+                color: rgba(255,255,255,0.8);
+                border: 1px solid rgba(255,255,255,0.2);
+              }
+              .btn-secondary:hover { 
+                background: rgba(255,255,255,0.15);
+                color: #fff;
+              }
+              .back-link { 
+                display: block;
+                margin-top: 24px; 
+                color: #5eead4; 
+                text-decoration: none; 
+                font-size: 14px; 
+              }
+              .back-link:hover { text-decoration: underline; }
             </style>
           </head>
           <body>
-            <nav class="sidebar">
-              <h2>🌙 Yume Tools</h2>
-              <div class="section-title">Getting Started</div>
-              <ul>
-                <li><a href="/docs/">Home</a></li>
-                <li><a href="/docs/#/quickstart">Quick Start</a></li>
-              </ul>
-              <div class="section-title">Widgets</div>
-              <ul>
-                <li><a href="/docs/#/widgets/overview">Overview</a></li>
-                <li><a href="/docs/#/widgets/navbar">Navigation Bar</a></li>
-                <li><a href="/docs/#/widgets/mention">Mention Widget</a></li>
-                <li><a href="/docs/#/widgets/event-parser">Event Parser</a></li>
-                <li><a href="/docs/#/widgets/infographic-maker">Infographic Maker</a></li>
-                <li>🔒 CruDDy Panel</li>
-              </ul>
-              <div class="section-title">🔒 Protected</div>
-              <ul>
-                <li style="color:rgba(255,255,255,0.4);">API Reference</li>
-                <li style="color:rgba(255,255,255,0.4);">Database</li>
-                <li style="color:rgba(255,255,255,0.4);">DevOps</li>
-                <li style="color:rgba(255,255,255,0.4);">Development</li>
-              </ul>
-            </nav>
-            <main class="main-content">
-              <div class="box">
-                <div class="icon">🔒</div>
-                <h1>Protected Content</h1>
-                <p>This documentation page requires authorized access.</p>
-                ${user ? `
-                  <div class="user-info">
-                    <p style="margin:0;">Logged in as: <strong>${user.username}</strong></p>
-                    <p style="margin:5px 0 0 0; color: rgba(255,255,255,0.5);">You don't have access to this content.</p>
-                  </div>
-                  <a href="/auth/logout" class="btn" style="background: rgba(255,255,255,0.1);">Logout</a>
-                ` : `
-                  <a href="${loginUrl}" class="btn">Login with Discord</a>
-                `}
-              </div>
-            </main>
+            <div class="container">
+              <div class="icon">🔒</div>
+              <h1>No Access</h1>
+              <p>This content requires authorized access.</p>
+              ${user ? `
+                <div class="user-box">
+                  <p>Signed in as <strong>${user.username}</strong></p>
+                  <p style="font-size:13px; color:rgba(255,255,255,0.5); margin-top:8px;">You don't have permission to view this page.</p>
+                </div>
+                <a href="/auth/logout" class="btn btn-secondary">Sign Out</a>
+              ` : `
+                <div class="user-box">
+                  <p>Sign in to access protected documentation.</p>
+                </div>
+                <a href="${loginUrl}" class="btn btn-primary">Login with Discord</a>
+              `}
+              <a href="/docs/" class="back-link">← Back to public documentation</a>
+            </div>
           </body>
           </html>
         `, {
