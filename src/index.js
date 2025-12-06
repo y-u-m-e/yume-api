@@ -305,36 +305,93 @@ export default {
           <!DOCTYPE html>
           <html>
           <head>
-            <title>Access Required</title>
+            <title>Access Required - Yume Tools Docs</title>
+            <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify-themeable@0/dist/css/theme-simple-dark.min.css">
             <style>
-              body { font-family: system-ui; background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); color: #fff; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+              :root {
+                --theme-color: #5eead4;
+                --sidebar-width: 260px;
+              }
+              .sidebar {
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: var(--sidebar-width);
+                height: 100vh;
+                background: #1a1a2e;
+                padding: 20px;
+                box-sizing: border-box;
+                overflow-y: auto;
+                border-right: 1px solid rgba(94, 234, 212, 0.1);
+              }
+              .sidebar h2 { color: #5eead4; font-size: 18px; margin-bottom: 20px; }
+              .sidebar ul { list-style: none; padding: 0; margin: 0; }
+              .sidebar li { margin: 8px 0; }
+              .sidebar a { color: rgba(255,255,255,0.7); text-decoration: none; font-size: 14px; }
+              .sidebar a:hover { color: #5eead4; }
+              .sidebar .section-title { color: rgba(255,255,255,0.5); font-size: 12px; text-transform: uppercase; margin-top: 20px; margin-bottom: 10px; }
+              .main-content {
+                margin-left: var(--sidebar-width);
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+              }
               .box { text-align: center; padding: 50px; background: rgba(255,255,255,0.05); border-radius: 16px; border: 1px solid rgba(94, 234, 212, 0.2); max-width: 400px; }
               h1 { color: #5eead4; font-size: 24px; margin-bottom: 10px; }
               .icon { font-size: 48px; margin-bottom: 20px; }
-              p { color: rgba(255,255,255,0.7); line-height: 1.6; }
-              .btn { display: inline-block; margin-top: 20px; padding: 12px 24px; background: linear-gradient(135deg, #5865F2 0%, #4752C4 100%); color: #fff; text-decoration: none; border-radius: 8px; font-weight: 600; transition: all 0.2s; }
+              p { color: rgba(255,255,255,0.7); line-height: 1.6; font-family: system-ui; }
+              .btn { display: inline-block; margin-top: 20px; padding: 12px 24px; background: linear-gradient(135deg, #5865F2 0%, #4752C4 100%); color: #fff; text-decoration: none; border-radius: 8px; font-weight: 600; transition: all 0.2s; font-family: system-ui; }
               .btn:hover { transform: translateY(-2px); box-shadow: 0 4px 15px rgba(88, 101, 242, 0.4); }
-              .public-link { display: block; margin-top: 15px; color: #5eead4; text-decoration: none; font-size: 14px; }
-              .public-link:hover { text-decoration: underline; }
-              .user-info { margin-top: 20px; padding: 15px; background: rgba(0,0,0,0.2); border-radius: 8px; font-size: 13px; }
+              .user-info { margin-top: 20px; padding: 15px; background: rgba(0,0,0,0.2); border-radius: 8px; font-size: 13px; font-family: system-ui; }
+              @media (max-width: 768px) {
+                .sidebar { display: none; }
+                .main-content { margin-left: 0; }
+              }
             </style>
           </head>
           <body>
-            <div class="box">
-              <div class="icon">🔒</div>
-              <h1>Protected Content</h1>
-              <p>This documentation page requires authorized access.</p>
-              ${user ? `
-                <div class="user-info">
-                  <p style="margin:0;">Logged in as: <strong>${user.username}</strong></p>
-                  <p style="margin:5px 0 0 0; color: rgba(255,255,255,0.5);">You don't have access to this content.</p>
-                </div>
-                <a href="/auth/logout" class="btn" style="background: rgba(255,255,255,0.1);">Logout</a>
-              ` : `
-                <a href="${loginUrl}" class="btn">Login with Discord</a>
-              `}
-              <a href="/docs/" class="public-link">← Back to public docs</a>
-            </div>
+            <nav class="sidebar">
+              <h2>🌙 Yume Tools</h2>
+              <div class="section-title">Getting Started</div>
+              <ul>
+                <li><a href="/docs/">Home</a></li>
+                <li><a href="/docs/#/quickstart">Quick Start</a></li>
+              </ul>
+              <div class="section-title">Widgets</div>
+              <ul>
+                <li><a href="/docs/#/widgets/overview">Overview</a></li>
+                <li><a href="/docs/#/widgets/navbar">Navigation Bar</a></li>
+                <li><a href="/docs/#/widgets/mention">Mention Widget</a></li>
+                <li><a href="/docs/#/widgets/event-parser">Event Parser</a></li>
+                <li><a href="/docs/#/widgets/infographic-maker">Infographic Maker</a></li>
+                <li>🔒 CruDDy Panel</li>
+              </ul>
+              <div class="section-title">🔒 Protected</div>
+              <ul>
+                <li style="color:rgba(255,255,255,0.4);">API Reference</li>
+                <li style="color:rgba(255,255,255,0.4);">Database</li>
+                <li style="color:rgba(255,255,255,0.4);">DevOps</li>
+                <li style="color:rgba(255,255,255,0.4);">Development</li>
+              </ul>
+            </nav>
+            <main class="main-content">
+              <div class="box">
+                <div class="icon">🔒</div>
+                <h1>Protected Content</h1>
+                <p>This documentation page requires authorized access.</p>
+                ${user ? `
+                  <div class="user-info">
+                    <p style="margin:0;">Logged in as: <strong>${user.username}</strong></p>
+                    <p style="margin:5px 0 0 0; color: rgba(255,255,255,0.5);">You don't have access to this content.</p>
+                  </div>
+                  <a href="/auth/logout" class="btn" style="background: rgba(255,255,255,0.1);">Logout</a>
+                ` : `
+                  <a href="${loginUrl}" class="btn">Login with Discord</a>
+                `}
+              </div>
+            </main>
           </body>
           </html>
         `, {
