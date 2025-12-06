@@ -253,10 +253,12 @@ export default {
 
     // GET /auth/logout - Clear session
     if (method === "GET" && url.pathname === "/auth/logout") {
+      // Check for return_url or default to docs
+      const returnUrl = url.searchParams.get("return_url") || "/docs/";
       return new Response(null, {
         status: 302,
         headers: {
-          "Location": "https://yumes-tools.itai.gg/#sandbox",
+          "Location": returnUrl,
           "Set-Cookie": "yume_auth=; Path=/; Domain=.itai.gg; HttpOnly; Secure; SameSite=Lax; Max-Age=0"
         }
       });
@@ -298,102 +300,22 @@ export default {
       const user = token ? verifyToken(token) : null;
       const canAccessDocs = user ? hasAccess(user.userId, allowedUsersDocs) : false;
       
-      // If protected page and not authorized, redirect to no-access page
-      if (isProtectedPage && !canAccessDocs) {
-        const loginUrl = `${url.origin}/auth/login?return_url=${encodeURIComponent(url.href)}`;
-        return new Response(`
-          <!DOCTYPE html>
-          <html>
-          <head>
-            <title>No Access - Yume Tools Docs</title>
-            <style>
-              * { margin: 0; padding: 0; box-sizing: border-box; }
-              body { 
-                font-family: system-ui, -apple-system, sans-serif;
-                background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); 
-                color: #fff; 
-                display: flex; 
-                align-items: center; 
-                justify-content: center; 
-                min-height: 100vh;
-              }
-              .container { text-align: center; padding: 40px; max-width: 420px; }
-              .icon { font-size: 64px; margin-bottom: 24px; }
-              h1 { color: #5eead4; font-size: 28px; margin-bottom: 12px; }
-              p { color: rgba(255,255,255,0.7); line-height: 1.6; margin-bottom: 8px; }
-              .user-box { 
-                margin: 24px 0; 
-                padding: 16px 20px; 
-                background: rgba(255,255,255,0.05); 
-                border-radius: 12px; 
-                border: 1px solid rgba(94, 234, 212, 0.15);
-              }
-              .user-box strong { color: #5eead4; }
-              .btn { 
-                display: inline-block; 
-                margin: 8px; 
-                padding: 12px 28px; 
-                text-decoration: none; 
-                border-radius: 8px; 
-                font-weight: 600; 
-                font-size: 14px;
-                transition: all 0.2s; 
-              }
-              .btn-primary { 
-                background: linear-gradient(135deg, #5865F2 0%, #4752C4 100%); 
-                color: #fff; 
-              }
-              .btn-primary:hover { 
-                transform: translateY(-2px); 
-                box-shadow: 0 6px 20px rgba(88, 101, 242, 0.4); 
-              }
-              .btn-secondary { 
-                background: rgba(255,255,255,0.1); 
-                color: rgba(255,255,255,0.8);
-                border: 1px solid rgba(255,255,255,0.2);
-              }
-              .btn-secondary:hover { 
-                background: rgba(255,255,255,0.15);
-                color: #fff;
-              }
-              .back-link { 
-                display: block;
-                margin-top: 24px; 
-                color: #5eead4; 
-                text-decoration: none; 
-                font-size: 14px; 
-              }
-              .back-link:hover { text-decoration: underline; }
-            </style>
-          </head>
-          <body>
-            <div class="container">
-              <div class="icon">🔒</div>
-              <h1>No Access</h1>
-              <p>This content requires authorized access.</p>
-              ${user ? `
-                <div class="user-box">
-                  <p>Signed in as <strong>${user.username}</strong></p>
-                  <p style="font-size:13px; color:rgba(255,255,255,0.5); margin-top:8px;">You don't have permission to view this page.</p>
-                </div>
-                <a href="/auth/logout" class="btn btn-secondary">Sign Out</a>
-              ` : `
-                <div class="user-box">
-                  <p>Sign in to access protected documentation.</p>
-                </div>
-                <a href="${loginUrl}" class="btn btn-primary">Login with Discord</a>
-              `}
-              <a href="/docs/" class="back-link">← Back to public documentation</a>
-            </div>
-          </body>
-          </html>
-        `, {
-          status: 403,
-          headers: { "Content-Type": "text/html" }
-        });
-      }
-      
+      // For protected pages without access, serve index.html (client-side handles lock overlay)
+      // This allows Docsify to load and the JavaScript to show the lock overlay
       const sha = env.SHA_DOCS || "main";
+      
+      if (isProtectedPage && !canAccessDocs) {
+        // Serve index.html so client-side lock overlay can show
+        const indexUrl = `https://cdn.jsdelivr.net/gh/y-u-m-e/yume-api@${sha}/docs/index.html`;
+        const indexResponse = await fetch(indexUrl);
+        if (indexResponse.ok) {
+          const html = await indexResponse.text();
+          return new Response(html, {
+            status: 200,
+            headers: { "Content-Type": "text/html", "Cache-Control": "no-cache" }
+          });
+        }
+      }
       const cdnUrl = `https://cdn.jsdelivr.net/gh/y-u-m-e/yume-api@${sha}/docs/${filePath}`;
       
       try {
