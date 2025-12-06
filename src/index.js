@@ -110,8 +110,12 @@ export default {
     };
 
     // GET /auth/login - Redirect to Discord OAuth
+    // Supports ?return_url= parameter to redirect back after login
     if (method === "GET" && url.pathname === "/auth/login") {
-      const state = crypto.randomUUID();
+      const returnUrl = url.searchParams.get("return_url") || "https://yumes-tools.itai.gg/";
+      // Encode return URL in state (base64)
+      const stateData = JSON.stringify({ returnUrl, nonce: crypto.randomUUID() });
+      const state = btoa(stateData);
       const params = new URLSearchParams({
         client_id: env.DISCORD_CLIENT_ID,
         redirect_uri: env.DISCORD_REDIRECT_URI,
@@ -164,11 +168,30 @@ export default {
         // Create session token
         const sessionToken = createToken(user.id, user.username, user.avatar);
 
+        // Decode return URL from state
+        let returnUrl = "https://yumes-tools.itai.gg/";
+        const state = url.searchParams.get("state");
+        if (state) {
+          try {
+            const stateData = JSON.parse(atob(state));
+            if (stateData.returnUrl) {
+              // Only allow redirects to trusted domains
+              const allowedDomains = ["itai.gg", "yumes-tools.itai.gg", "api.itai.gg"];
+              const returnUrlObj = new URL(stateData.returnUrl);
+              if (allowedDomains.some(d => returnUrlObj.hostname === d || returnUrlObj.hostname.endsWith("." + d))) {
+                returnUrl = stateData.returnUrl;
+              }
+            }
+          } catch (e) {
+            console.error("Failed to decode state:", e);
+          }
+        }
+
         // Redirect back to the app with cookie set
         return new Response(null, {
           status: 302,
           headers: {
-            "Location": "https://yumes-tools.itai.gg/#history-interface",
+            "Location": returnUrl,
             "Set-Cookie": `yume_auth=${sessionToken}; Path=/; Domain=.itai.gg; HttpOnly; Secure; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60}`
           }
         });
@@ -247,8 +270,9 @@ export default {
       const user = token ? verifyToken(token) : null;
       
       if (!user) {
-        // Not logged in - redirect to login
-        return Response.redirect(`${url.origin}/auth/login`, 302);
+        // Not logged in - redirect to login with return URL
+        const returnUrl = encodeURIComponent(url.href);
+        return Response.redirect(`${url.origin}/auth/login?return_url=${returnUrl}`, 302);
       }
       
       // Check docs-specific access

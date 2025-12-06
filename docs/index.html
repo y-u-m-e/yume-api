@@ -30,9 +30,90 @@
     .markdown-section code {
       border-radius: 4px;
     }
+    
+    /* User bar styles */
+    .docs-user-bar {
+      position: fixed;
+      top: 0;
+      right: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 20px;
+      background: linear-gradient(135deg, rgba(20, 60, 60, 0.95) 0%, rgba(25, 50, 80, 0.95) 100%);
+      border-bottom-left-radius: 12px;
+      border: 1px solid rgba(94, 234, 212, 0.2);
+      border-top: none;
+      border-right: none;
+      backdrop-filter: blur(8px);
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 13px;
+    }
+    .docs-user-avatar {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      border: 2px solid rgba(94, 234, 212, 0.4);
+    }
+    .docs-user-name {
+      color: #fff;
+      font-weight: 500;
+    }
+    .docs-user-status {
+      color: rgba(255, 255, 255, 0.5);
+      font-size: 11px;
+    }
+    .docs-auth-btn {
+      padding: 6px 14px;
+      border: none;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-decoration: none;
+    }
+    .docs-login-btn {
+      background: linear-gradient(135deg, #5865F2 0%, #4752C4 100%);
+      color: #fff;
+    }
+    .docs-login-btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(88, 101, 242, 0.4);
+    }
+    .docs-logout-btn {
+      background: rgba(255, 255, 255, 0.1);
+      color: rgba(255, 255, 255, 0.7);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+    .docs-logout-btn:hover {
+      background: rgba(255, 255, 255, 0.15);
+      color: #fff;
+    }
+    .docs-access-badge {
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .docs-access-badge.granted {
+      background: rgba(34, 197, 94, 0.2);
+      color: #22c55e;
+    }
+    .docs-access-badge.denied {
+      background: rgba(239, 68, 68, 0.2);
+      color: #ef4444;
+    }
   </style>
 </head>
 <body>
+  <!-- User authentication bar -->
+  <div class="docs-user-bar" id="docs-user-bar">
+    <span class="docs-user-status">Checking session...</span>
+  </div>
+  
   <div id="app"></div>
   <script>
     window.$docsify = {
@@ -70,6 +151,46 @@
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-json.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-sql.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-powershell.min.js"></script>
+  
+  <!-- User authentication check -->
+  <script>
+    (async function() {
+      const userBar = document.getElementById('docs-user-bar');
+      const apiBase = 'https://api.itai.gg';
+      
+      try {
+        const resp = await fetch(`${apiBase}/auth/me`, { credentials: 'include' });
+        const data = await resp.json();
+        
+        if (data.authenticated && data.user) {
+          const user = data.user;
+          const avatarUrl = user.avatar 
+            ? `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png?size=64`
+            : `https://cdn.discordapp.com/embed/avatars/${parseInt(user.id) % 5}.png`;
+          
+          const docsAccess = data.access?.docs ? 'granted' : 'denied';
+          
+          userBar.innerHTML = `
+            <img class="docs-user-avatar" src="${avatarUrl}" alt="">
+            <span class="docs-user-name">${user.username}</span>
+            <span class="docs-access-badge ${docsAccess}">Docs: ${docsAccess}</span>
+            <a href="${apiBase}/auth/logout" class="docs-auth-btn docs-logout-btn">Logout</a>
+          `;
+        } else {
+          const returnUrl = encodeURIComponent(window.location.href);
+          userBar.innerHTML = `
+            <span class="docs-user-status">Not logged in</span>
+            <a href="${apiBase}/auth/login?return_url=${returnUrl}" class="docs-auth-btn docs-login-btn">
+              Login with Discord
+            </a>
+          `;
+        }
+      } catch (err) {
+        console.error('Auth check failed:', err);
+        userBar.innerHTML = `<span class="docs-user-status">Auth check failed</span>`;
+      }
+    })();
+  </script>
 </body>
 </html>
 
