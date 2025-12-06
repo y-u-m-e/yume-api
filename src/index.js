@@ -220,7 +220,12 @@ export default {
           debug: { cookieReceived: cookieHeader !== "(no cookie header)", tokenFound: !!token }
         }), {
           status: 200,
-          headers: { ...corsHeaders, "Content-Type": "application/json" }
+          headers: { 
+            ...corsHeaders, 
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache"
+          }
         });
       }
 
@@ -247,20 +252,35 @@ export default {
         }
       }), {
         status: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" }
+        headers: { 
+          ...corsHeaders, 
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store, no-cache, must-revalidate",
+          "Pragma": "no-cache"
+        }
       });
     }
 
-    // GET /auth/logout - Clear session
+    // GET /auth/logout - Clear session completely
     if (method === "GET" && url.pathname === "/auth/logout") {
       // Check for return_url or default to docs
       const returnUrl = url.searchParams.get("return_url") || "/docs/";
+      // Clear cookie with multiple methods to ensure it's deleted across all browsers
+      const expiredDate = new Date(0).toUTCString();
       return new Response(null, {
         status: 302,
-        headers: {
-          "Location": returnUrl,
-          "Set-Cookie": "yume_auth=; Path=/; Domain=.itai.gg; HttpOnly; Secure; SameSite=Lax; Max-Age=0"
-        }
+        headers: [
+          ["Location", returnUrl],
+          // Clear with Max-Age=0
+          ["Set-Cookie", "yume_auth=; Path=/; Domain=.itai.gg; HttpOnly; Secure; SameSite=Lax; Max-Age=0"],
+          // Also clear with Expires in the past
+          ["Set-Cookie", `yume_auth=; Path=/; Domain=.itai.gg; HttpOnly; Secure; SameSite=Lax; Expires=${expiredDate}`],
+          // Clear without domain in case it was set differently
+          ["Set-Cookie", "yume_auth=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0"],
+          // Prevent caching of this response
+          ["Cache-Control", "no-store, no-cache, must-revalidate"],
+          ["Pragma", "no-cache"]
+        ]
       });
     }
 
