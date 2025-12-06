@@ -35,20 +35,25 @@
     .docs-user-bar {
       position: fixed;
       top: 10px;
-      left: 50%;
-      transform: translateX(-50%);
+      left: 10px;
       z-index: 100;
       display: flex;
       align-items: center;
-      gap: 12px;
-      padding: 8px 20px;
+      gap: 10px;
+      padding: 8px 16px;
       background: linear-gradient(135deg, rgba(20, 60, 60, 0.95) 0%, rgba(25, 50, 80, 0.95) 100%);
-      border-radius: 50px;
+      border-radius: 8px;
       border: 1px solid rgba(94, 234, 212, 0.2);
       backdrop-filter: blur(8px);
       font-family: system-ui, -apple-system, sans-serif;
-      font-size: 13px;
+      font-size: 12px;
       box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+      transition: opacity 0.3s ease, transform 0.3s ease;
+    }
+    .docs-user-bar.fade-out {
+      opacity: 0;
+      transform: translateY(-10px);
+      pointer-events: none;
     }
     .docs-user-avatar {
       width: 28px;
@@ -156,22 +161,41 @@
   <script>
     (async function() {
       const userBar = document.getElementById('docs-user-bar');
-      const apiBase = window.location.origin; // Same origin since docs are served from api.itai.gg
+      const apiBase = window.location.origin;
       const returnUrl = encodeURIComponent(window.location.href);
       
+      let fadeTimeout;
+      
+      // Auto-hide after 5 seconds of no interaction
+      function startFadeTimer() {
+        clearTimeout(fadeTimeout);
+        fadeTimeout = setTimeout(() => {
+          userBar.classList.add('fade-out');
+        }, 5000);
+      }
+      
+      // Show on mouse enter
+      userBar.addEventListener('mouseenter', () => {
+        clearTimeout(fadeTimeout);
+        userBar.classList.remove('fade-out');
+      });
+      
+      // Start fade timer on mouse leave
+      userBar.addEventListener('mouseleave', startFadeTimer);
+      
       // Show login link after timeout in case auth check fails
-      const timeout = setTimeout(() => {
+      const authTimeout = setTimeout(() => {
         userBar.innerHTML = `
-          <span class="docs-user-status">Not logged in</span>
           <a href="${apiBase}/auth/login?return_url=${returnUrl}" class="docs-auth-btn docs-login-btn">
-            Login with Discord
+            Login
           </a>
         `;
+        startFadeTimer();
       }, 3000);
       
       try {
         const resp = await fetch(`${apiBase}/auth/me`, { credentials: 'include' });
-        clearTimeout(timeout);
+        clearTimeout(authTimeout);
         const data = await resp.json();
         
         if (data.authenticated && data.user) {
@@ -180,31 +204,28 @@
             ? `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png?size=64`
             : `https://cdn.discordapp.com/embed/avatars/${parseInt(user.id) % 5}.png`;
           
-          const docsAccess = data.access?.docs ? 'granted' : 'denied';
-          
           userBar.innerHTML = `
             <img class="docs-user-avatar" src="${avatarUrl}" alt="">
             <span class="docs-user-name">${user.username}</span>
-            <span class="docs-access-badge ${docsAccess}">Docs: ${docsAccess}</span>
             <a href="${apiBase}/auth/logout" class="docs-auth-btn docs-logout-btn">Logout</a>
           `;
         } else {
           userBar.innerHTML = `
-            <span class="docs-user-status">Not logged in</span>
             <a href="${apiBase}/auth/login?return_url=${returnUrl}" class="docs-auth-btn docs-login-btn">
-              Login with Discord
+              Login
             </a>
           `;
         }
+        startFadeTimer();
       } catch (err) {
-        clearTimeout(timeout);
+        clearTimeout(authTimeout);
         console.error('Auth check failed:', err);
         userBar.innerHTML = `
-          <span class="docs-user-status">Not logged in</span>
           <a href="${apiBase}/auth/login?return_url=${returnUrl}" class="docs-auth-btn docs-login-btn">
-            Login with Discord
+            Login
           </a>
         `;
+        startFadeTimer();
       }
     })();
   </script>
