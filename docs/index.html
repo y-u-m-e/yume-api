@@ -204,33 +204,44 @@
       function hideProtectedLinks() {
         const protectedPaths = ['api/', 'database/', 'devops/', 'development/', 'cruddy-panel'];
         
-        // Wait for Docsify to render the sidebar
-        const checkSidebar = setInterval(() => {
+        function doHide() {
           const sidebar = document.querySelector('.sidebar-nav');
-          if (sidebar) {
-            clearInterval(checkSidebar);
+          if (!sidebar) return;
+          
+          // Hide all li elements that contain protected content
+          sidebar.querySelectorAll('li').forEach(li => {
+            const text = li.textContent || '';
+            const links = li.querySelectorAll('a');
+            let isProtected = text.includes('🔒');
             
-            // Hide all li elements that contain protected content
-            sidebar.querySelectorAll('li').forEach(li => {
-              const text = li.textContent || '';
-              const links = li.querySelectorAll('a');
-              let isProtected = text.includes('🔒');
-              
-              // Also check if any links point to protected paths
-              links.forEach(link => {
-                const href = link.getAttribute('href') || '';
-                if (protectedPaths.some(p => href.includes(p))) {
-                  isProtected = true;
-                }
-              });
-              
-              if (isProtected) {
-                li.style.display = 'none';
+            // Also check if any links point to protected paths
+            links.forEach(link => {
+              const href = link.getAttribute('href') || '';
+              if (protectedPaths.some(p => href.includes(p))) {
+                isProtected = true;
               }
+            });
+            
+            if (isProtected) {
+              li.style.display = 'none';
+            }
+          });
+        }
+        
+        // Initial hide
+        const checkSidebar = setInterval(() => {
+          if (document.querySelector('.sidebar-nav')) {
+            clearInterval(checkSidebar);
+            doHide();
+            
+            // Watch for sidebar changes (Docsify re-renders on navigation)
+            const observer = new MutationObserver(doHide);
+            observer.observe(document.querySelector('.sidebar-nav'), {
+              childList: true,
+              subtree: true
             });
           }
         }, 100);
-        // Stop checking after 5 seconds
         setTimeout(() => clearInterval(checkSidebar), 5000);
       }
       
