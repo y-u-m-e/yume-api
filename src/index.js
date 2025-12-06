@@ -308,26 +308,23 @@ export default {
         const loginUrl = `${url.origin}/auth/login?return_url=${encodeURIComponent(url.href.replace('.md', ''))}`;
         const placeholder = `# 🔒 Protected Content
 
-This page requires authorized access.
+This page requires authorized access to view.
 
-${user ? `
-> **Signed in as:** ${user.username}
-> 
-> You don't have permission to view this content.
-> 
-> [Sign Out](/auth/logout?return_url=/docs/)
-` : `
-> Please log in with Discord to view this content.
->
-> [Login with Discord](${loginUrl})
-`}
+${user ? `**Signed in as:** ${user.username}
+
+You don't have permission to view this content. Contact an administrator if you believe this is an error.
+
+[Sign Out](/auth/logout?return_url=/docs/)` : `Please log in with Discord to view this content.
+
+[Login with Discord](${loginUrl})`}
 
 ---
 
 [← Back to public documentation](/docs/)
 `;
+        // Return 200 so Docsify renders the placeholder (security is still enforced - real content never sent)
         return new Response(placeholder, {
-          status: 403,
+          status: 200,
           headers: { "Content-Type": "text/markdown", "Cache-Control": "no-store" }
         });
       }
