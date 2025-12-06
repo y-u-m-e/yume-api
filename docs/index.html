@@ -196,10 +196,55 @@
         `;
       }, 2000);
       
+      // Function to hide protected sidebar links
+      function hideProtectedLinks() {
+        // Wait for Docsify to render the sidebar
+        const checkSidebar = setInterval(() => {
+          const sidebar = document.querySelector('.sidebar-nav');
+          if (sidebar) {
+            clearInterval(checkSidebar);
+            // Hide links containing 🔒 or protected sections
+            sidebar.querySelectorAll('a').forEach(link => {
+              const text = link.textContent;
+              const href = link.getAttribute('href') || '';
+              // Hide protected sections
+              if (text.includes('🔒') || 
+                  href.includes('api/') || 
+                  href.includes('database/') || 
+                  href.includes('devops/') || 
+                  href.includes('development/') ||
+                  href.includes('cruddy-panel')) {
+                link.style.display = 'none';
+                // Also hide parent li if it exists
+                if (link.parentElement?.tagName === 'LI') {
+                  link.parentElement.style.display = 'none';
+                }
+              }
+            });
+            // Hide section headers for protected content
+            sidebar.querySelectorAll('p, strong').forEach(el => {
+              if (el.textContent.includes('🔒')) {
+                el.style.display = 'none';
+                // Hide following ul if exists
+                let next = el.nextElementSibling;
+                while (next && next.tagName === 'UL') {
+                  next.style.display = 'none';
+                  next = next.nextElementSibling;
+                }
+              }
+            });
+          }
+        }, 100);
+        // Stop checking after 5 seconds
+        setTimeout(() => clearInterval(checkSidebar), 5000);
+      }
+      
       try {
         const resp = await fetch(`${apiBase}/auth/me`, { credentials: 'include' });
         clearTimeout(authTimeout);
         const data = await resp.json();
+        
+        const hasDocsAccess = data.authenticated && data.access?.docs;
         
         if (data.authenticated && data.user) {
           isLoggedIn = true;
@@ -213,14 +258,20 @@
             <span class="docs-user-name">${user.username}</span>
             <a href="${apiBase}/auth/logout" class="docs-auth-btn docs-logout-btn">Logout</a>
           `;
-          startFadeTimer(); // Start auto-hide for logged-in users
+          startFadeTimer();
+          
+          // Hide protected links if user doesn't have docs access
+          if (!hasDocsAccess) {
+            hideProtectedLinks();
+          }
         } else {
           userBar.innerHTML = `
             <a href="${apiBase}/auth/login?return_url=${returnUrl}" class="docs-auth-btn docs-login-btn">
               Login with Discord
             </a>
           `;
-          // Login button stays visible - no fade
+          // Hide protected links for non-authenticated users
+          hideProtectedLinks();
         }
       } catch (err) {
         clearTimeout(authTimeout);
@@ -230,7 +281,8 @@
             Login with Discord
           </a>
         `;
-        // Login button stays visible - no fade
+        // Hide protected links on auth failure
+        hideProtectedLinks();
       }
     })();
   </script>
