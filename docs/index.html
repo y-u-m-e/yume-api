@@ -38,13 +38,16 @@
     window.$docsify = {
       name: '🌙 Yume Tools',
       repo: 'y-u-m-e/yume-api',
+      basePath: '/docs/',
       loadSidebar: true,
       subMaxLevel: 3,
       auto2top: true,
+      relativePath: true,
       search: {
         placeholder: 'Search docs...',
         noData: 'No results found',
-        depth: 3
+        depth: 3,
+        pathNamespaces: ['/docs']
       },
       copyCode: {
         buttonText: 'Copy',

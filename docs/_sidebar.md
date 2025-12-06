@@ -1,5 +1,5 @@
 * **Getting Started**
-  * [Home](/)
+  * [Home](README.md)
   * [Quick Start](quickstart.md)
 
 * **Widgets**
@@ -7,6 +7,7 @@
   * [Navigation Bar](widgets/navbar.md)
   * [Mention Widget](widgets/mention.md)
   * [Event Parser](widgets/event-parser.md)
+  * [Infographic Maker](widgets/infographic-maker.md)
   * [CruDDy Panel](widgets/cruddy-panel.md)
 
 * **API Reference**
