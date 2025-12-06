@@ -357,6 +357,10 @@ export default {
         "nav-bar.js": {
           path: "dist/nav-bar/nav-bar.js",
           sha: env.SHA_NAV_BAR || "main"
+        },
+        "infographic-maker.js": {
+          path: "dist/infographic-maker/infographic-maker.js",
+          sha: env.SHA_INFOGRAPHIC_MAKER || "main"
         }
       };
       
