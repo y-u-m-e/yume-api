@@ -262,51 +262,25 @@ export default {
       });
     }
 
-    // --- Protected Documentation Site ---
-    // Serves Docsify docs with Discord OAuth protection
+    // --- Documentation Site (Public + Protected) ---
+    // Some pages are public, others require authentication
     if (method === "GET" && url.pathname.startsWith("/docs")) {
-      // Check authentication
-      const token = getTokenFromCookie(request);
-      const user = token ? verifyToken(token) : null;
+      // Define public pages (accessible without auth)
+      const publicPages = [
+        "index.html",
+        "README.md",
+        "quickstart.md",
+        "_sidebar.md",
+        "widgets/overview.md",
+        "widgets/navbar.md",
+        "widgets/mention.md",
+        "widgets/event-parser.md",
+        "widgets/infographic-maker.md"
+      ];
       
-      if (!user) {
-        // Not logged in - redirect to login with return URL
-        const returnUrl = encodeURIComponent(url.href);
-        return Response.redirect(`${url.origin}/auth/login?return_url=${returnUrl}`, 302);
-      }
+      // Protected pages require auth (API, Database, DevOps, CruDDy Panel, Development)
+      const protectedPrefixes = ["api/", "database/", "devops/", "development/", "widgets/cruddy-panel"];
       
-      // Check docs-specific access
-      const canAccessDocs = hasAccess(user.userId, allowedUsersDocs);
-      if (!canAccessDocs) {
-        // Logged in but not authorized
-        return new Response(`
-          <!DOCTYPE html>
-          <html>
-          <head>
-            <title>Unauthorized</title>
-            <style>
-              body { font-family: system-ui; background: #0f172a; color: #fff; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-              .box { text-align: center; padding: 40px; background: rgba(255,255,255,0.05); border-radius: 12px; }
-              h1 { color: #f87171; }
-              a { color: #5eead4; }
-            </style>
-          </head>
-          <body>
-            <div class="box">
-              <h1>⛔ Unauthorized</h1>
-              <p>You don't have access to the documentation.</p>
-              <p>Logged in as: ${user.username}</p>
-              <p><a href="/auth/logout">Logout</a></p>
-            </div>
-          </body>
-          </html>
-        `, {
-          status: 403,
-          headers: { "Content-Type": "text/html" }
-        });
-      }
-      
-      // User is authorized - serve docs from jsDelivr (yume-api repo)
       let filePath = url.pathname.replace(/^\/docs\/?/, "") || "index.html";
       if (filePath === "" || filePath.endsWith("/")) {
         filePath = filePath + "index.html";
@@ -314,6 +288,59 @@ export default {
       // If no extension and not a known file, serve index.html (SPA routing)
       if (!filePath.includes(".")) {
         filePath = "index.html";
+      }
+      
+      // Check if page is protected
+      const isProtectedPage = protectedPrefixes.some(prefix => filePath.startsWith(prefix));
+      
+      // Check authentication
+      const token = getTokenFromCookie(request);
+      const user = token ? verifyToken(token) : null;
+      const canAccessDocs = user ? hasAccess(user.userId, allowedUsersDocs) : false;
+      
+      // If protected page and not authorized, show access required message
+      if (isProtectedPage && !canAccessDocs) {
+        const loginUrl = `${url.origin}/auth/login?return_url=${encodeURIComponent(url.href)}`;
+        return new Response(`
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <title>Access Required</title>
+            <style>
+              body { font-family: system-ui; background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); color: #fff; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+              .box { text-align: center; padding: 50px; background: rgba(255,255,255,0.05); border-radius: 16px; border: 1px solid rgba(94, 234, 212, 0.2); max-width: 400px; }
+              h1 { color: #5eead4; font-size: 24px; margin-bottom: 10px; }
+              .icon { font-size: 48px; margin-bottom: 20px; }
+              p { color: rgba(255,255,255,0.7); line-height: 1.6; }
+              .btn { display: inline-block; margin-top: 20px; padding: 12px 24px; background: linear-gradient(135deg, #5865F2 0%, #4752C4 100%); color: #fff; text-decoration: none; border-radius: 8px; font-weight: 600; transition: all 0.2s; }
+              .btn:hover { transform: translateY(-2px); box-shadow: 0 4px 15px rgba(88, 101, 242, 0.4); }
+              .public-link { display: block; margin-top: 15px; color: #5eead4; text-decoration: none; font-size: 14px; }
+              .public-link:hover { text-decoration: underline; }
+              .user-info { margin-top: 20px; padding: 15px; background: rgba(0,0,0,0.2); border-radius: 8px; font-size: 13px; }
+            </style>
+          </head>
+          <body>
+            <div class="box">
+              <div class="icon">🔒</div>
+              <h1>Protected Content</h1>
+              <p>This documentation page requires authorized access.</p>
+              ${user ? `
+                <div class="user-info">
+                  <p style="margin:0;">Logged in as: <strong>${user.username}</strong></p>
+                  <p style="margin:5px 0 0 0; color: rgba(255,255,255,0.5);">You don't have access to this content.</p>
+                </div>
+                <a href="/auth/logout" class="btn" style="background: rgba(255,255,255,0.1);">Logout</a>
+              ` : `
+                <a href="${loginUrl}" class="btn">Login with Discord</a>
+              `}
+              <a href="/docs/" class="public-link">← Back to public docs</a>
+            </div>
+          </body>
+          </html>
+        `, {
+          status: 403,
+          headers: { "Content-Type": "text/html" }
+        });
       }
       
       const sha = env.SHA_DOCS || "main";

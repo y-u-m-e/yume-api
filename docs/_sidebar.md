@@ -8,9 +8,9 @@
   * [Mention Widget](widgets/mention.md)
   * [Event Parser](widgets/event-parser.md)
   * [Infographic Maker](widgets/infographic-maker.md)
-  * [CruDDy Panel](widgets/cruddy-panel.md)
+  * [🔒 CruDDy Panel](widgets/cruddy-panel.md)
 
-* **API Reference**
+* **🔒 API Reference**
   * [Overview](api/overview.md)
   * [Authentication](api/authentication.md)
   * [Attendance Records](api/attendance.md)
@@ -18,17 +18,17 @@
   * [CDN Proxy](api/cdn.md)
   * [Health Check](api/health.md)
 
-* **Database**
+* **🔒 Database**
   * [Schema](database/schema.md)
   * [Operations](database/operations.md)
 
-* **DevOps**
+* **🔒 DevOps**
   * [Environments](devops/environments.md)
   * [CI/CD Pipeline](devops/cicd.md)
   * [Backups](devops/backups.md)
   * [Monitoring](devops/monitoring.md)
 
-* **Development**
+* **🔒 Development**
   * [Local Setup](development/setup.md)
   * [Configuration](development/configuration.md)
 
