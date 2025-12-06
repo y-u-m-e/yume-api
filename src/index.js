@@ -73,7 +73,17 @@ export default {
 
     // --- Discord OAuth2 Authentication ---
     const DISCORD_API = "https://discord.com/api/v10";
-    const allowedUsers = (env.ALLOWED_USER_IDS || "").split(",").map(id => id.trim());
+    // Separate whitelists for different features
+    const allowedUsersDocs = (env.ALLOWED_USER_IDS_DOCS || "").split(",").map(id => id.trim()).filter(Boolean);
+    const allowedUsersCruddy = (env.ALLOWED_USER_IDS_CRUDDY || "").split(",").map(id => id.trim()).filter(Boolean);
+    // Legacy fallback - if specific lists are empty, fall back to general list
+    const allowedUsersGeneral = (env.ALLOWED_USER_IDS || "").split(",").map(id => id.trim()).filter(Boolean);
+    
+    // Helper to check if user has access to a feature
+    const hasAccess = (userId, featureList) => {
+      if (featureList.length > 0) return featureList.includes(userId);
+      return allowedUsersGeneral.includes(userId); // Fallback to general list
+    };
 
     // Helper: Create a simple signed token (base64 encoded JSON with timestamp)
     const createToken = (userId, username, avatar) => {
@@ -179,8 +189,6 @@ export default {
       console.log("Cookie header:", cookieHeader);
       console.log("Extracted token:", token ? token.substring(0, 30) + "..." : "(none)");
       console.log("Decoded user:", user);
-      console.log("Allowed users:", allowedUsers);
-      console.log("ALLOWED_USER_IDS env:", env.ALLOWED_USER_IDS);
 
       if (!user) {
         console.log("Result: NOT AUTHENTICATED (no valid token)");
@@ -193,18 +201,27 @@ export default {
         });
       }
 
-      const isAuthorized = allowedUsers.includes(user.userId);
-      console.log("User ID:", user.userId, "Authorized:", isAuthorized);
+      // Check access for each feature
+      const canAccessDocs = hasAccess(user.userId, allowedUsersDocs);
+      const canAccessCruddy = hasAccess(user.userId, allowedUsersCruddy);
+      // Legacy: "authorized" = has access to cruddy panel (backward compatible)
+      const isAuthorized = canAccessCruddy;
+      
+      console.log("User ID:", user.userId);
+      console.log("Access - Docs:", canAccessDocs, "Cruddy:", canAccessCruddy);
 
       return new Response(JSON.stringify({
         authenticated: true,
         authorized: isAuthorized,
+        access: {
+          docs: canAccessDocs,
+          cruddy: canAccessCruddy
+        },
         user: {
           id: user.userId,
           username: user.username,
           avatar: user.avatar
-        },
-        debug: { allowedUsers, userIdType: typeof user.userId }
+        }
       }), {
         status: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -234,8 +251,9 @@ export default {
         return Response.redirect(`${url.origin}/auth/login`, 302);
       }
       
-      const isAuthorized = allowedUsers.includes(user.userId);
-      if (!isAuthorized) {
+      // Check docs-specific access
+      const canAccessDocs = hasAccess(user.userId, allowedUsersDocs);
+      if (!canAccessDocs) {
         // Logged in but not authorized
         return new Response(`
           <!DOCTYPE html>
