@@ -208,7 +208,7 @@
           const sidebar = document.querySelector('.sidebar-nav');
           if (!sidebar) return;
           
-          // Find all links in the sidebar
+          // First pass: hide links that are protected
           sidebar.querySelectorAll('a').forEach(link => {
             const href = link.getAttribute('href') || '';
             const text = link.textContent || '';
@@ -221,6 +221,21 @@
               const parentLi = link.closest('li');
               if (parentLi) {
                 parentLi.style.display = 'none';
+              }
+            }
+          });
+          
+          // Second pass: hide section headers (li with nested ul) where all children are hidden
+          sidebar.querySelectorAll('li').forEach(li => {
+            const nestedList = li.querySelector(':scope > ul');
+            if (nestedList) {
+              // Check if all li children in the nested list are hidden
+              const childLis = nestedList.querySelectorAll(':scope > li');
+              const allHidden = Array.from(childLis).every(child => 
+                child.style.display === 'none'
+              );
+              if (allHidden && childLis.length > 0) {
+                li.style.display = 'none';
               }
             }
           });
