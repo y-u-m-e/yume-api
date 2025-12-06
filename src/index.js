@@ -300,22 +300,38 @@ export default {
       const user = token ? verifyToken(token) : null;
       const canAccessDocs = user ? hasAccess(user.userId, allowedUsersDocs) : false;
       
-      // For protected pages without access, serve index.html (client-side handles lock overlay)
-      // This allows Docsify to load and the JavaScript to show the lock overlay
       const sha = env.SHA_DOCS || "main";
       
-      if (isProtectedPage && !canAccessDocs) {
-        // Serve index.html so client-side lock overlay can show
-        const indexUrl = `https://cdn.jsdelivr.net/gh/y-u-m-e/yume-api@${sha}/docs/index.html`;
-        const indexResponse = await fetch(indexUrl);
-        if (indexResponse.ok) {
-          const html = await indexResponse.text();
-          return new Response(html, {
-            status: 200,
-            headers: { "Content-Type": "text/html", "Cache-Control": "no-cache" }
-          });
-        }
+      // SERVER-SIDE PROTECTION: Never send protected content to unauthorized users
+      // If requesting a protected markdown file without access, return placeholder
+      if (isProtectedPage && !canAccessDocs && filePath.endsWith(".md")) {
+        const loginUrl = `${url.origin}/auth/login?return_url=${encodeURIComponent(url.href.replace('.md', ''))}`;
+        const placeholder = `# 🔒 Protected Content
+
+This page requires authorized access.
+
+${user ? `
+> **Signed in as:** ${user.username}
+> 
+> You don't have permission to view this content.
+> 
+> [Sign Out](/auth/logout?return_url=/docs/)
+` : `
+> Please log in with Discord to view this content.
+>
+> [Login with Discord](${loginUrl})
+`}
+
+---
+
+[← Back to public documentation](/docs/)
+`;
+        return new Response(placeholder, {
+          status: 403,
+          headers: { "Content-Type": "text/markdown", "Cache-Control": "no-store" }
+        });
       }
+      
       const cdnUrl = `https://cdn.jsdelivr.net/gh/y-u-m-e/yume-api@${sha}/docs/${filePath}`;
       
       try {
