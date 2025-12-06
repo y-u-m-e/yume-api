@@ -35,7 +35,8 @@
     .docs-user-bar {
       position: fixed;
       top: 10px;
-      left: 10px;
+      left: 50%;
+      transform: translateX(-50%);
       z-index: 100;
       display: flex;
       align-items: center;
@@ -52,7 +53,7 @@
     }
     .docs-user-bar.fade-out {
       opacity: 0;
-      transform: translateY(-10px);
+      transform: translateX(-50%) translateY(-10px);
       pointer-events: none;
     }
     .docs-user-avatar {
