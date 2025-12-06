@@ -208,25 +208,25 @@
           const sidebar = document.querySelector('.sidebar-nav');
           if (!sidebar) return;
           
-          // Only hide li elements that directly contain a protected link (leaf nodes)
-          sidebar.querySelectorAll('li').forEach(li => {
-            // Get direct link child (not nested links)
-            const directLink = li.querySelector(':scope > a');
-            if (!directLink) return;
+          // Find all links in the sidebar
+          sidebar.querySelectorAll('a').forEach(link => {
+            const href = link.getAttribute('href') || '';
+            const text = link.textContent || '';
             
-            const href = directLink.getAttribute('href') || '';
-            const text = directLink.textContent || '';
-            
-            // Check if this specific link is protected
+            // Check if this link is protected
             const isProtected = text.includes('🔒') || protectedPaths.some(p => href.includes(p));
             
             if (isProtected) {
-              li.style.display = 'none';
+              // Hide the parent li of this link
+              const parentLi = link.closest('li');
+              if (parentLi) {
+                parentLi.style.display = 'none';
+              }
             }
           });
         }
         
-        // Initial hide
+        // Initial hide after a short delay
         const checkSidebar = setInterval(() => {
           if (document.querySelector('.sidebar-nav')) {
             clearInterval(checkSidebar);
