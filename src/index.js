@@ -265,19 +265,24 @@ export default {
     if (method === "GET" && url.pathname === "/auth/logout") {
       // Check for return_url or default to docs
       const returnUrl = url.searchParams.get("return_url") || "/docs/";
-      // Clear cookie with multiple methods to ensure it's deleted across all browsers
+      // Clear cookie with ALL possible variations to ensure deletion
       const expiredDate = new Date(0).toUTCString();
       return new Response(null, {
         status: 302,
         headers: [
           ["Location", returnUrl],
-          // Clear with Max-Age=0
+          // Clear with .itai.gg domain
           ["Set-Cookie", "yume_auth=; Path=/; Domain=.itai.gg; HttpOnly; Secure; SameSite=Lax; Max-Age=0"],
-          // Also clear with Expires in the past
           ["Set-Cookie", `yume_auth=; Path=/; Domain=.itai.gg; HttpOnly; Secure; SameSite=Lax; Expires=${expiredDate}`],
-          // Clear without domain in case it was set differently
+          // Clear with api.itai.gg domain (specific subdomain)
+          ["Set-Cookie", "yume_auth=; Path=/; Domain=api.itai.gg; HttpOnly; Secure; SameSite=Lax; Max-Age=0"],
+          ["Set-Cookie", `yume_auth=; Path=/; Domain=api.itai.gg; HttpOnly; Secure; SameSite=Lax; Expires=${expiredDate}`],
+          // Clear without domain (matches current domain only)
           ["Set-Cookie", "yume_auth=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0"],
-          // Prevent caching of this response
+          ["Set-Cookie", `yume_auth=; Path=/; HttpOnly; Secure; SameSite=Lax; Expires=${expiredDate}`],
+          // Clear with itai.gg (no leading dot)
+          ["Set-Cookie", "yume_auth=; Path=/; Domain=itai.gg; HttpOnly; Secure; SameSite=Lax; Max-Age=0"],
+          // Prevent caching
           ["Cache-Control", "no-store, no-cache, must-revalidate"],
           ["Pragma", "no-cache"]
         ]
