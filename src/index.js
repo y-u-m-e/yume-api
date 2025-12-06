@@ -359,7 +359,7 @@ You don't have permission to view this content. Contact an administrator if you 
               const html = await indexResponse.text();
               return new Response(html, {
                 status: 200,
-                headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=300" }
+                headers: { "Content-Type": "text/html", "Cache-Control": "no-store" }
               });
             }
           }
@@ -373,9 +373,19 @@ You don't have permission to view this content. Contact an administrator if you 
                            filePath.endsWith(".js") ? "application/javascript" :
                            "text/plain";
         
+        // IMPORTANT: Protected pages must NOT be cached by the browser
+        // Otherwise users can still see content after logging out
+        const cacheControl = isProtectedPage 
+          ? "no-store, no-cache, must-revalidate" 
+          : "public, max-age=300";
+        
         return new Response(content, {
           status: 200,
-          headers: { "Content-Type": contentType, "Cache-Control": "public, max-age=300" }
+          headers: { 
+            "Content-Type": contentType, 
+            "Cache-Control": cacheControl,
+            "Pragma": isProtectedPage ? "no-cache" : ""
+          }
         });
       } catch (err) {
         console.error("Docs proxy error:", err);
