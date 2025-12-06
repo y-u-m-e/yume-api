@@ -222,12 +222,102 @@ export default {
       });
     }
 
+    // --- Protected Documentation Site ---
+    // Serves Docsify docs with Discord OAuth protection
+    if (method === "GET" && url.pathname.startsWith("/docs")) {
+      // Check authentication
+      const token = getTokenFromCookie(request);
+      const user = token ? verifyToken(token) : null;
+      
+      if (!user) {
+        // Not logged in - redirect to login
+        return Response.redirect(`${url.origin}/auth/login`, 302);
+      }
+      
+      const isAuthorized = allowedUsers.includes(user.userId);
+      if (!isAuthorized) {
+        // Logged in but not authorized
+        return new Response(`
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <title>Unauthorized</title>
+            <style>
+              body { font-family: system-ui; background: #0f172a; color: #fff; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+              .box { text-align: center; padding: 40px; background: rgba(255,255,255,0.05); border-radius: 12px; }
+              h1 { color: #f87171; }
+              a { color: #5eead4; }
+            </style>
+          </head>
+          <body>
+            <div class="box">
+              <h1>⛔ Unauthorized</h1>
+              <p>You don't have access to the documentation.</p>
+              <p>Logged in as: ${user.username}</p>
+              <p><a href="/auth/logout">Logout</a></p>
+            </div>
+          </body>
+          </html>
+        `, {
+          status: 403,
+          headers: { "Content-Type": "text/html" }
+        });
+      }
+      
+      // User is authorized - serve docs from jsDelivr (yume-api repo)
+      let filePath = url.pathname.replace(/^\/docs\/?/, "") || "index.html";
+      if (filePath === "" || filePath.endsWith("/")) {
+        filePath = filePath + "index.html";
+      }
+      // If no extension and not a known file, serve index.html (SPA routing)
+      if (!filePath.includes(".")) {
+        filePath = "index.html";
+      }
+      
+      const sha = env.SHA_DOCS || "main";
+      const cdnUrl = `https://cdn.jsdelivr.net/gh/y-u-m-e/yume-api@${sha}/docs/${filePath}`;
+      
+      try {
+        const cdnResponse = await fetch(cdnUrl);
+        if (!cdnResponse.ok) {
+          // File not found - serve index.html for SPA
+          if (cdnResponse.status === 404) {
+            const indexUrl = `https://cdn.jsdelivr.net/gh/y-u-m-e/yume-api@${sha}/docs/index.html`;
+            const indexResponse = await fetch(indexUrl);
+            if (indexResponse.ok) {
+              const html = await indexResponse.text();
+              return new Response(html, {
+                status: 200,
+                headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=300" }
+              });
+            }
+          }
+          return new Response("Documentation not found", { status: 404 });
+        }
+        
+        const content = await cdnResponse.text();
+        const contentType = filePath.endsWith(".html") ? "text/html" :
+                           filePath.endsWith(".md") ? "text/markdown" :
+                           filePath.endsWith(".css") ? "text/css" :
+                           filePath.endsWith(".js") ? "application/javascript" :
+                           "text/plain";
+        
+        return new Response(content, {
+          status: 200,
+          headers: { "Content-Type": contentType, "Cache-Control": "public, max-age=300" }
+        });
+      } catch (err) {
+        console.error("Docs proxy error:", err);
+        return new Response("Failed to load documentation", { status: 502 });
+      }
+    }
+
     // --- Widget CDN Proxy ---
     // Proxies jsDelivr with the configured SHA for instant cache-busting
     // Each widget has its own SHA env variable for independent versioning
-    // Usage: https://discord-relay.itai.app/cdn/event-parser-widget.js
-    //        https://discord-relay.itai.app/cdn/history-interface.js
-    //        https://discord-relay.itai.app/cdn/mention-widget.js
+    // Usage: https://api.itai.gg/cdn/event-parser-widget.js
+    //        https://api.itai.gg/cdn/cruddy-panel.js
+    //        https://api.itai.gg/cdn/mention-widget.js
     const cdnMatch = url.pathname.match(/^\/cdn\/(.+\.js)$/);
     if (cdnMatch && method === "GET") {
       const file = cdnMatch[1];

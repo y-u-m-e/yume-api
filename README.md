@@ -7,7 +7,7 @@ Backend API for [Yume Tools](https://yumes-tools.itai.gg) - OSRS clan management
 | | URL |
 |---|---|
 | **API** | [api.itai.gg](https://api.itai.gg) |
-| **Docs** | [y-u-m-e.github.io/yume-api](https://y-u-m-e.github.io/yume-api) |
+| **Docs** | [api.itai.gg/docs](https://api.itai.gg/docs) 🔒 |
 | **Widgets** | [github.com/y-u-m-e/yume-tools](https://github.com/y-u-m-e/yume-tools) |
 
 ## ⚡ Quick Check
@@ -25,11 +25,7 @@ curl https://api.itai.gg/health
 
 ## 📚 Documentation
 
-Full documentation available at [y-u-m-e.github.io/yume-api](https://y-u-m-e.github.io/yume-api)
-
-- [API Reference](https://y-u-m-e.github.io/yume-api/#/api/overview)
-- [Widget Docs](https://y-u-m-e.github.io/yume-api/#/widgets/overview)
-- [DevOps Guide](https://y-u-m-e.github.io/yume-api/#/devops/cicd)
+Full documentation available at [api.itai.gg/docs](https://api.itai.gg/docs) (requires Discord login)
 
 ## 🚀 Deploy
 
