@@ -208,19 +208,17 @@
           const sidebar = document.querySelector('.sidebar-nav');
           if (!sidebar) return;
           
-          // Hide all li elements that contain protected content
+          // Only hide li elements that directly contain a protected link (leaf nodes)
           sidebar.querySelectorAll('li').forEach(li => {
-            const text = li.textContent || '';
-            const links = li.querySelectorAll('a');
-            let isProtected = text.includes('🔒');
+            // Get direct link child (not nested links)
+            const directLink = li.querySelector(':scope > a');
+            if (!directLink) return;
             
-            // Also check if any links point to protected paths
-            links.forEach(link => {
-              const href = link.getAttribute('href') || '';
-              if (protectedPaths.some(p => href.includes(p))) {
-                isProtected = true;
-              }
-            });
+            const href = directLink.getAttribute('href') || '';
+            const text = directLink.textContent || '';
+            
+            // Check if this specific link is protected
+            const isProtected = text.includes('🔒') || protectedPaths.some(p => href.includes(p));
             
             if (isProtected) {
               li.style.display = 'none';

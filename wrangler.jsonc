@@ -37,7 +37,7 @@
 		"SHA_MENTION_WIDGET": "12284df8ae8659d0c99f96b4df2b928786d53465",
 		"SHA_NAV_BAR": "9cade89",
 		"SHA_INFOGRAPHIC_MAKER": "e0f7227",
-		"SHA_DOCS": "6756e66",
+		"SHA_DOCS": "0a3e2b6",
 		"DISCORD_CLIENT_ID": "1446582844553035918",
 		"DISCORD_REDIRECT_URI": "https://api.itai.gg/auth/callback",
 		// Feature-specific user whitelists (leave empty to use ALLOWED_USER_IDS as fallback)
