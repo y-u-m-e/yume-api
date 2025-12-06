@@ -267,21 +267,18 @@ export default {
     // --- Documentation Site (Public + Protected) ---
     // Some pages are public, others require authentication
     if (method === "GET" && url.pathname.startsWith("/docs")) {
-      // Define public pages (accessible without auth)
-      const publicPages = [
-        "index.html",
-        "README.md",
-        "quickstart.md",
-        "_sidebar.md",
-        "widgets/overview.md",
-        "widgets/navbar.md",
-        "widgets/mention.md",
-        "widgets/event-parser.md",
-        "widgets/infographic-maker.md"
+      // ============================================
+      // PROTECTED SECTIONS CONFIGURATION
+      // Add paths here to protect them from unauthorized access
+      // These paths match the start of the file path (e.g., "api/" matches "api/overview.md")
+      // ============================================
+      const protectedPrefixes = [
+        "api/",                    // API Reference section
+        "database/",               // Database section  
+        "devops/",                 // DevOps section
+        "development/",            // Development section
+        "widgets/cruddy-panel"     // CruDDy Panel widget (single page)
       ];
-      
-      // Protected pages require auth (API, Database, DevOps, CruDDy Panel, Development)
-      const protectedPrefixes = ["api/", "database/", "devops/", "development/", "widgets/cruddy-panel"];
       
       let filePath = url.pathname.replace(/^\/docs\/?/, "") || "index.html";
       if (filePath === "" || filePath.endsWith("/")) {

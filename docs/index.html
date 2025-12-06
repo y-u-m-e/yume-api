@@ -179,8 +179,15 @@
       }, 2000);
       
       // Function to hide protected sidebar links
+      // NOTE: Keep this in sync with protectedPrefixes in server (src/index.js)
       function hideProtectedLinks() {
-        const protectedPaths = ['api/', 'database/', 'devops/', 'development/', 'cruddy-panel'];
+        const protectedPaths = [
+          'api/',                    // API Reference section
+          'database/',               // Database section
+          'devops/',                 // DevOps section
+          'development/',            // Development section
+          'widgets/cruddy-panel'     // CruDDy Panel widget
+        ];
         
         function doHide() {
           const sidebar = document.querySelector('.sidebar-nav');
