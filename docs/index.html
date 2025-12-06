@@ -112,6 +112,57 @@
       background: rgba(239, 68, 68, 0.2);
       color: #ef4444;
     }
+    
+    /* Lock overlay for protected pages */
+    .docs-lock-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: linear-gradient(135deg, rgba(15, 23, 42, 0.97) 0%, rgba(30, 41, 59, 0.97) 100%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 50;
+      backdrop-filter: blur(8px);
+    }
+    .docs-lock-icon {
+      font-size: 64px;
+      margin-bottom: 20px;
+    }
+    .docs-lock-title {
+      color: #5eead4;
+      font-size: 24px;
+      font-weight: 600;
+      margin-bottom: 10px;
+    }
+    .docs-lock-message {
+      color: rgba(255, 255, 255, 0.7);
+      text-align: center;
+      max-width: 400px;
+      line-height: 1.6;
+      margin-bottom: 20px;
+    }
+    .docs-lock-btn {
+      display: inline-block;
+      padding: 12px 24px;
+      background: linear-gradient(135deg, #5865F2 0%, #4752C4 100%);
+      color: #fff;
+      text-decoration: none;
+      border-radius: 8px;
+      font-weight: 600;
+      transition: all 0.2s;
+    }
+    .docs-lock-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 15px rgba(88, 101, 242, 0.4);
+      color: #fff;
+    }
+    .markdown-section {
+      position: relative;
+    }
   </style>
 </head>
 <body>
@@ -120,6 +171,9 @@
   
   <div id="app"></div>
   <script>
+    // Store auth state globally for Docsify hooks
+    window.yumeAuth = { hasDocsAccess: null, checking: true };
+    
     window.$docsify = {
       name: '🌙 Yume Tools',
       repo: 'y-u-m-e/yume-api',
@@ -141,7 +195,67 @@
       pagination: {
         previousText: '← Previous',
         nextText: 'Next →'
-      }
+      },
+      plugins: [
+        function(hook, vm) {
+          // Protected paths
+          const protectedPaths = ['api/', 'database/', 'devops/', 'development/', 'cruddy-panel'];
+          
+          function isProtectedPage(path) {
+            return protectedPaths.some(p => path.includes(p));
+          }
+          
+          function showLockOverlay() {
+            // Remove any existing overlay
+            const existing = document.querySelector('.docs-lock-overlay');
+            if (existing) existing.remove();
+            
+            const content = document.querySelector('.markdown-section');
+            if (!content) return;
+            
+            const returnUrl = encodeURIComponent(window.location.href);
+            const overlay = document.createElement('div');
+            overlay.className = 'docs-lock-overlay';
+            overlay.innerHTML = `
+              <div class="docs-lock-icon">🔒</div>
+              <div class="docs-lock-title">Protected Content</div>
+              <p class="docs-lock-message">
+                This page requires authorized access.<br>
+                Please log in with Discord to view this content.
+              </p>
+              <a href="${window.location.origin}/auth/login?return_url=${returnUrl}" class="docs-lock-btn">
+                Login with Discord
+              </a>
+            `;
+            content.appendChild(overlay);
+          }
+          
+          function removeLockOverlay() {
+            const overlay = document.querySelector('.docs-lock-overlay');
+            if (overlay) overlay.remove();
+          }
+          
+          // Check after each page render
+          hook.doneEach(function() {
+            const path = vm.route.path || '';
+            
+            // Wait for auth check to complete
+            const checkAccess = () => {
+              if (window.yumeAuth.checking) {
+                setTimeout(checkAccess, 100);
+                return;
+              }
+              
+              if (isProtectedPage(path) && !window.yumeAuth.hasDocsAccess) {
+                showLockOverlay();
+              } else {
+                removeLockOverlay();
+              }
+            };
+            checkAccess();
+          });
+        }
+      ]
     }
   </script>
   <!-- Docsify core -->
@@ -246,6 +360,10 @@
         
         const hasDocsAccess = data.authenticated && data.access?.docs;
         
+        // Update global auth state
+        window.yumeAuth.hasDocsAccess = hasDocsAccess;
+        window.yumeAuth.checking = false;
+        
         if (data.authenticated && data.user) {
           isLoggedIn = true;
           const user = data.user;
@@ -265,6 +383,10 @@
             hideProtectedLinks();
           }
         } else {
+          // Update global auth state for non-authenticated
+          window.yumeAuth.hasDocsAccess = false;
+          window.yumeAuth.checking = false;
+          
           userBar.innerHTML = `
             <a href="${apiBase}/auth/login?return_url=${returnUrl}" class="docs-auth-btn docs-login-btn">
               Login with Discord
@@ -276,6 +398,11 @@
       } catch (err) {
         clearTimeout(authTimeout);
         console.error('Auth check failed:', err);
+        
+        // Update global auth state on error
+        window.yumeAuth.hasDocsAccess = false;
+        window.yumeAuth.checking = false;
+        
         userBar.innerHTML = `
           <a href="${apiBase}/auth/login?return_url=${returnUrl}" class="docs-auth-btn docs-login-btn">
             Login with Discord
