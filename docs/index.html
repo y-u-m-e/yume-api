@@ -119,16 +119,16 @@
     window.$docsify = {
       name: '🌙 Yume Tools',
       repo: 'y-u-m-e/yume-api',
-      basePath: '/docs/',
       loadSidebar: true,
       subMaxLevel: 3,
       auto2top: true,
-      relativePath: true,
+      alias: {
+        '/.*/_sidebar.md': '/_sidebar.md'
+      },
       search: {
         placeholder: 'Search docs...',
         noData: 'No results found',
-        depth: 3,
-        pathNamespaces: ['/docs']
+        depth: 3
       },
       copyCode: {
         buttonText: 'Copy',
@@ -156,10 +156,22 @@
   <script>
     (async function() {
       const userBar = document.getElementById('docs-user-bar');
-      const apiBase = 'https://api.itai.gg';
+      const apiBase = window.location.origin; // Same origin since docs are served from api.itai.gg
+      const returnUrl = encodeURIComponent(window.location.href);
+      
+      // Show login link after timeout in case auth check fails
+      const timeout = setTimeout(() => {
+        userBar.innerHTML = `
+          <span class="docs-user-status">Not logged in</span>
+          <a href="${apiBase}/auth/login?return_url=${returnUrl}" class="docs-auth-btn docs-login-btn">
+            Login with Discord
+          </a>
+        `;
+      }, 3000);
       
       try {
         const resp = await fetch(`${apiBase}/auth/me`, { credentials: 'include' });
+        clearTimeout(timeout);
         const data = await resp.json();
         
         if (data.authenticated && data.user) {
@@ -177,7 +189,6 @@
             <a href="${apiBase}/auth/logout" class="docs-auth-btn docs-logout-btn">Logout</a>
           `;
         } else {
-          const returnUrl = encodeURIComponent(window.location.href);
           userBar.innerHTML = `
             <span class="docs-user-status">Not logged in</span>
             <a href="${apiBase}/auth/login?return_url=${returnUrl}" class="docs-auth-btn docs-login-btn">
@@ -186,8 +197,14 @@
           `;
         }
       } catch (err) {
+        clearTimeout(timeout);
         console.error('Auth check failed:', err);
-        userBar.innerHTML = `<span class="docs-user-status">Auth check failed</span>`;
+        userBar.innerHTML = `
+          <span class="docs-user-status">Not logged in</span>
+          <a href="${apiBase}/auth/login?return_url=${returnUrl}" class="docs-auth-btn docs-login-btn">
+            Login with Discord
+          </a>
+        `;
       }
     })();
   </script>
