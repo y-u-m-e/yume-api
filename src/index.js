@@ -337,7 +337,7 @@ You don't have permission to view this content. Contact an administrator if you 
 
 ---
 
-[← Back to public documentation](/docs/)
+[← Back to public documentation](#/)
 `;
         // Return 200 so Docsify renders the placeholder (security is still enforced - real content never sent)
         return new Response(placeholder, {
