@@ -111,6 +111,9 @@ export default {
     
     // Helper: Get redirect URI based on request host (supports multiple domains)
     const getRedirectUri = (host) => {
+      if (host.includes("emuy.io")) {
+        return "https://api.emuy.io/auth/callback";
+      }
       if (host.includes("emuy.gg")) {
         return "https://api.emuy.gg/auth/callback";
       }
@@ -120,6 +123,9 @@ export default {
     
     // Helper: Get default return URL based on request host
     const getDefaultReturnUrl = (host) => {
+      if (host.includes("emuy.io")) {
+        return "https://emuy.io/";
+      }
       if (host.includes("emuy.gg")) {
         return "https://emuy.gg/";
       }
