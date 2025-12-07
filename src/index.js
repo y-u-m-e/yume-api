@@ -204,7 +204,7 @@ export default {
             const stateData = JSON.parse(atob(state));
             if (stateData.returnUrl) {
               // Only allow redirects to trusted domains
-              const allowedDomains = ["itai.gg", "yumes-tools.itai.gg", "api.itai.gg"];
+              const allowedDomains = ["itai.gg", "emuy.io", "emuy.gg"];
               const returnUrlObj = new URL(stateData.returnUrl);
               if (allowedDomains.some(d => returnUrlObj.hostname === d || returnUrlObj.hostname.endsWith("." + d))) {
                 returnUrl = stateData.returnUrl;
@@ -215,12 +215,23 @@ export default {
           }
         }
 
+        // Determine cookie domain based on return URL
+        let cookieDomain = ".itai.gg";
+        try {
+          const returnHost = new URL(returnUrl).hostname;
+          if (returnHost.includes("emuy.io")) {
+            cookieDomain = ".emuy.io";
+          } else if (returnHost.includes("emuy.gg")) {
+            cookieDomain = ".emuy.gg";
+          }
+        } catch (e) {}
+
         // Redirect back to the app with cookie set
         return new Response(null, {
           status: 302,
           headers: {
             "Location": returnUrl,
-            "Set-Cookie": `yume_auth=${sessionToken}; Path=/; Domain=.itai.gg; HttpOnly; Secure; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60}`
+            "Set-Cookie": `yume_auth=${sessionToken}; Path=/; Domain=${cookieDomain}; HttpOnly; Secure; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60}`
           }
         });
       } catch (err) {
@@ -302,14 +313,15 @@ export default {
           // Clear with .itai.gg domain
           ["Set-Cookie", "yume_auth=; Path=/; Domain=.itai.gg; HttpOnly; Secure; SameSite=Lax; Max-Age=0"],
           ["Set-Cookie", `yume_auth=; Path=/; Domain=.itai.gg; HttpOnly; Secure; SameSite=Lax; Expires=${expiredDate}`],
-          // Clear with api.itai.gg domain (specific subdomain)
-          ["Set-Cookie", "yume_auth=; Path=/; Domain=api.itai.gg; HttpOnly; Secure; SameSite=Lax; Max-Age=0"],
-          ["Set-Cookie", `yume_auth=; Path=/; Domain=api.itai.gg; HttpOnly; Secure; SameSite=Lax; Expires=${expiredDate}`],
+          // Clear with .emuy.io domain
+          ["Set-Cookie", "yume_auth=; Path=/; Domain=.emuy.io; HttpOnly; Secure; SameSite=Lax; Max-Age=0"],
+          ["Set-Cookie", `yume_auth=; Path=/; Domain=.emuy.io; HttpOnly; Secure; SameSite=Lax; Expires=${expiredDate}`],
+          // Clear with .emuy.gg domain
+          ["Set-Cookie", "yume_auth=; Path=/; Domain=.emuy.gg; HttpOnly; Secure; SameSite=Lax; Max-Age=0"],
+          ["Set-Cookie", `yume_auth=; Path=/; Domain=.emuy.gg; HttpOnly; Secure; SameSite=Lax; Expires=${expiredDate}`],
           // Clear without domain (matches current domain only)
           ["Set-Cookie", "yume_auth=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0"],
           ["Set-Cookie", `yume_auth=; Path=/; HttpOnly; Secure; SameSite=Lax; Expires=${expiredDate}`],
-          // Clear with itai.gg (no leading dot)
-          ["Set-Cookie", "yume_auth=; Path=/; Domain=itai.gg; HttpOnly; Secure; SameSite=Lax; Max-Age=0"],
           // Prevent caching
           ["Cache-Control", "no-store, no-cache, must-revalidate"],
           ["Pragma", "no-cache"]
