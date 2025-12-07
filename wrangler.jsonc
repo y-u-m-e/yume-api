@@ -14,6 +14,10 @@
 		{
 			"pattern": "api.itai.gg",
 			"custom_domain": true
+		},
+		{
+			"pattern": "api.emuy.gg",
+			"custom_domain": true
 		}
 	],
 	"d1_databases": [

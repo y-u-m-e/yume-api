@@ -108,17 +108,36 @@ export default {
       const match = cookie.match(/yume_auth=([^;]+)/);
       return match ? match[1] : null;
     };
+    
+    // Helper: Get redirect URI based on request host (supports multiple domains)
+    const getRedirectUri = (host) => {
+      if (host.includes("emuy.gg")) {
+        return "https://api.emuy.gg/auth/callback";
+      }
+      // Default to itai.gg
+      return env.DISCORD_REDIRECT_URI || "https://api.itai.gg/auth/callback";
+    };
+    
+    // Helper: Get default return URL based on request host
+    const getDefaultReturnUrl = (host) => {
+      if (host.includes("emuy.gg")) {
+        return "https://emuy.gg/";
+      }
+      return "https://yumes-tools.itai.gg/";
+    };
 
     // GET /auth/login - Redirect to Discord OAuth
     // Supports ?return_url= parameter to redirect back after login
     if (method === "GET" && url.pathname === "/auth/login") {
-      const returnUrl = url.searchParams.get("return_url") || "https://yumes-tools.itai.gg/";
+      const host = url.host;
+      const redirectUri = getRedirectUri(host);
+      const returnUrl = url.searchParams.get("return_url") || getDefaultReturnUrl(host);
       // Encode return URL in state (base64)
       const stateData = JSON.stringify({ returnUrl, nonce: crypto.randomUUID() });
       const state = btoa(stateData);
       const params = new URLSearchParams({
         client_id: env.DISCORD_CLIENT_ID,
-        redirect_uri: env.DISCORD_REDIRECT_URI,
+        redirect_uri: redirectUri,
         response_type: "code",
         scope: "identify",
         state: state
@@ -134,6 +153,9 @@ export default {
       }
 
       try {
+        const host = url.host;
+        const redirectUri = getRedirectUri(host);
+        
         // Exchange code for access token
         const tokenResponse = await fetch(`${DISCORD_API}/oauth2/token`, {
           method: "POST",
@@ -143,7 +165,7 @@ export default {
             client_secret: env.DISCORD_CLIENT_SECRET,
             grant_type: "authorization_code",
             code: code,
-            redirect_uri: env.DISCORD_REDIRECT_URI
+            redirect_uri: redirectUri
           })
         });
 
