@@ -225,10 +225,10 @@ export default {
         } catch (e) {}
 
         // Redirect back to the app with cookie set
-        // Use SameSite=None for cross-domain cookie support (e.g., pages.dev calling api.emuy.io)
+        // Use SameSite=Lax for same-domain, SameSite=None only for cross-domain (pages.dev)
         const cookieOptions = omitDomain
           ? `yume_auth=${sessionToken}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=${7 * 24 * 60 * 60}`
-          : `yume_auth=${sessionToken}; Path=/; Domain=${cookieDomain}; HttpOnly; Secure; SameSite=None; Max-Age=${7 * 24 * 60 * 60}`;
+          : `yume_auth=${sessionToken}; Path=/; Domain=${cookieDomain}; HttpOnly; Secure; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60}`;
         
         return new Response(null, {
           status: 302,
