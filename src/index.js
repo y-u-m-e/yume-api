@@ -170,8 +170,10 @@ export default {
         });
 
         if (!tokenResponse.ok) {
-          console.error("Token exchange failed:", await tokenResponse.text());
-          return new Response("Authentication failed", { status: 401 });
+          const errorText = await tokenResponse.text();
+          console.error("Token exchange failed:", errorText);
+          console.error("Used redirect_uri:", redirectUri);
+          return new Response(`Authentication failed: ${errorText}`, { status: 401 });
         }
 
         const tokens = await tokenResponse.json();
@@ -209,26 +211,9 @@ export default {
           }
         }
 
-        // Determine cookie domain based on return URL
-        // For pages.dev, we can't use domain-wide cookies, so omit Domain attribute
-        let cookieDomain = ".itai.gg";
-        let omitDomain = false;
-        try {
-          const returnHost = new URL(returnUrl).hostname;
-          if (returnHost.includes("emuy.gg")) {
-            cookieDomain = ".emuy.gg";
-          } else if (returnHost.includes("pages.dev")) {
-            // For pages.dev, set cookie on the API domain instead
-            // The frontend will need to use a different auth approach
-            omitDomain = true;
-          }
-        } catch (e) {}
-
         // Redirect back to the app with cookie set
-        // Use SameSite=Lax for same-domain, SameSite=None only for cross-domain (pages.dev)
-        const cookieOptions = omitDomain
-          ? `yume_auth=${sessionToken}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=${7 * 24 * 60 * 60}`
-          : `yume_auth=${sessionToken}; Path=/; Domain=${cookieDomain}; HttpOnly; Secure; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60}`;
+        // Use SameSite=None for cross-site cookies
+        const cookieOptions = `yume_auth=${sessionToken}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=${7 * 24 * 60 * 60}`;
         
         return new Response(null, {
           status: 302,
