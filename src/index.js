@@ -204,7 +204,7 @@ export default {
             const stateData = JSON.parse(atob(state));
             if (stateData.returnUrl) {
               // Only allow redirects to trusted domains
-              const allowedDomains = ["itai.gg", "emuy.io", "emuy.gg"];
+              const allowedDomains = ["itai.gg", "emuy.io", "emuy.gg", "pages.dev"];
               const returnUrlObj = new URL(stateData.returnUrl);
               if (allowedDomains.some(d => returnUrlObj.hostname === d || returnUrlObj.hostname.endsWith("." + d))) {
                 returnUrl = stateData.returnUrl;
@@ -216,22 +216,33 @@ export default {
         }
 
         // Determine cookie domain based on return URL
+        // For pages.dev, we can't use domain-wide cookies, so omit Domain attribute
         let cookieDomain = ".itai.gg";
+        let omitDomain = false;
         try {
           const returnHost = new URL(returnUrl).hostname;
           if (returnHost.includes("emuy.io")) {
             cookieDomain = ".emuy.io";
           } else if (returnHost.includes("emuy.gg")) {
             cookieDomain = ".emuy.gg";
+          } else if (returnHost.includes("pages.dev")) {
+            // For pages.dev, set cookie on the API domain instead
+            // The frontend will need to use a different auth approach
+            omitDomain = true;
           }
         } catch (e) {}
 
         // Redirect back to the app with cookie set
+        // Use SameSite=None for cross-domain cookie support (e.g., pages.dev calling api.emuy.io)
+        const cookieOptions = omitDomain
+          ? `yume_auth=${sessionToken}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=${7 * 24 * 60 * 60}`
+          : `yume_auth=${sessionToken}; Path=/; Domain=${cookieDomain}; HttpOnly; Secure; SameSite=None; Max-Age=${7 * 24 * 60 * 60}`;
+        
         return new Response(null, {
           status: 302,
           headers: {
             "Location": returnUrl,
-            "Set-Cookie": `yume_auth=${sessionToken}; Path=/; Domain=${cookieDomain}; HttpOnly; Secure; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60}`
+            "Set-Cookie": cookieOptions
           }
         });
       } catch (err) {
