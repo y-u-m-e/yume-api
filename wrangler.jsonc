@@ -67,6 +67,13 @@
 					"custom_domain": true
 				}
 			],
+			"d1_databases": [
+				{
+					"binding": "EVENT_TRACK_DB",
+					"database_name": "event_tracking",
+					"database_id": "91a4523b-99e5-49df-9456-b0aa69bbdb1a"
+				}
+			],
 			"vars": {
 				"ENVIRONMENT": "staging",
 				"SHA_CRUDDY_PANEL": "main",
