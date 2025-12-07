@@ -111,9 +111,6 @@ export default {
     
     // Helper: Get redirect URI based on request host (supports multiple domains)
     const getRedirectUri = (host) => {
-      if (host.includes("emuy.io")) {
-        return "https://api.emuy.io/auth/callback";
-      }
       if (host.includes("emuy.gg")) {
         return "https://api.emuy.gg/auth/callback";
       }
@@ -123,9 +120,6 @@ export default {
     
     // Helper: Get default return URL based on request host
     const getDefaultReturnUrl = (host) => {
-      if (host.includes("emuy.io")) {
-        return "https://emuy.io/";
-      }
       if (host.includes("emuy.gg")) {
         return "https://emuy.gg/";
       }
@@ -204,7 +198,7 @@ export default {
             const stateData = JSON.parse(atob(state));
             if (stateData.returnUrl) {
               // Only allow redirects to trusted domains
-              const allowedDomains = ["itai.gg", "emuy.io", "emuy.gg", "pages.dev"];
+              const allowedDomains = ["itai.gg", "emuy.gg", "pages.dev"];
               const returnUrlObj = new URL(stateData.returnUrl);
               if (allowedDomains.some(d => returnUrlObj.hostname === d || returnUrlObj.hostname.endsWith("." + d))) {
                 returnUrl = stateData.returnUrl;
@@ -221,9 +215,7 @@ export default {
         let omitDomain = false;
         try {
           const returnHost = new URL(returnUrl).hostname;
-          if (returnHost.includes("emuy.io")) {
-            cookieDomain = ".emuy.io";
-          } else if (returnHost.includes("emuy.gg")) {
+          if (returnHost.includes("emuy.gg")) {
             cookieDomain = ".emuy.gg";
           } else if (returnHost.includes("pages.dev")) {
             // For pages.dev, set cookie on the API domain instead
@@ -324,9 +316,6 @@ export default {
           // Clear with .itai.gg domain
           ["Set-Cookie", "yume_auth=; Path=/; Domain=.itai.gg; HttpOnly; Secure; SameSite=Lax; Max-Age=0"],
           ["Set-Cookie", `yume_auth=; Path=/; Domain=.itai.gg; HttpOnly; Secure; SameSite=Lax; Expires=${expiredDate}`],
-          // Clear with .emuy.io domain
-          ["Set-Cookie", "yume_auth=; Path=/; Domain=.emuy.io; HttpOnly; Secure; SameSite=Lax; Max-Age=0"],
-          ["Set-Cookie", `yume_auth=; Path=/; Domain=.emuy.io; HttpOnly; Secure; SameSite=Lax; Expires=${expiredDate}`],
           // Clear with .emuy.gg domain
           ["Set-Cookie", "yume_auth=; Path=/; Domain=.emuy.gg; HttpOnly; Secure; SameSite=Lax; Max-Age=0"],
           ["Set-Cookie", `yume_auth=; Path=/; Domain=.emuy.gg; HttpOnly; Secure; SameSite=Lax; Expires=${expiredDate}`],

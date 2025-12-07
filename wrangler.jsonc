@@ -16,10 +16,6 @@
 			"custom_domain": true
 		},
 		{
-			"pattern": "api.emuy.io",
-			"custom_domain": true
-		},
-		{
 			"pattern": "api.emuy.gg",
 			"custom_domain": true
 		}
