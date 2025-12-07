@@ -350,6 +350,75 @@ export default {
       });
     }
 
+    // --- Admin: Cloudflare Pages Deployments ---
+    // Fetches deployment history for a Pages project
+    if (method === "GET" && url.pathname === "/admin/cf-deployments") {
+      const token = getTokenFromCookie(request);
+      const user = token ? verifyToken(token) : null;
+      
+      if (!user || !ADMIN_USER_IDS.includes(user.userId)) {
+        return new Response(JSON.stringify({ error: "Not authorized" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      const projectName = url.searchParams.get("project") || "yume-pages";
+      
+      if (!env.CLOUDFLARE_API_TOKEN || !env.CLOUDFLARE_ACCOUNT_ID) {
+        return new Response(JSON.stringify({ error: "Cloudflare credentials not configured" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        const cfResponse = await fetch(
+          `https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_ACCOUNT_ID}/pages/projects/${projectName}/deployments?per_page=5`,
+          {
+            headers: {
+              "Authorization": `Bearer ${env.CLOUDFLARE_API_TOKEN}`,
+              "Content-Type": "application/json"
+            }
+          }
+        );
+        
+        const data = await cfResponse.json();
+        
+        if (!data.success) {
+          return new Response(JSON.stringify({ error: data.errors?.[0]?.message || "Failed to fetch deployments" }), {
+            status: 500,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Map to a simpler format
+        const deployments = (data.result || []).map(d => ({
+          id: d.id,
+          url: d.url,
+          environment: d.environment,
+          status: d.latest_stage?.status || "unknown",
+          created_at: d.created_on,
+          source: {
+            type: d.source?.type,
+            branch: d.deployment_trigger?.metadata?.branch,
+            commit_hash: d.deployment_trigger?.metadata?.commit_hash?.substring(0, 7),
+            commit_message: d.deployment_trigger?.metadata?.commit_message?.split('\n')[0]
+          }
+        }));
+        
+        return new Response(JSON.stringify({ deployments }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: "Failed to fetch Cloudflare deployments" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
     // --- Documentation Site (Public + Protected) ---
     // Some pages are public, others require authentication
     if (method === "GET" && url.pathname.startsWith("/docs")) {
