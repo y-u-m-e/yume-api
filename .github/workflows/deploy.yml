@@ -1,7 +1,9 @@
 # CI/CD for Yume API Worker
 #
-# Staging: api-staging.itai.gg - Auto-deploys on push to main
-# Production: api.itai.gg - Manual deployment or via promote workflow
+# Auto-deploys to BOTH staging and production on push to main
+# (Same behavior as Cloudflare Pages for yume-pages)
+#
+# Manual triggers available for individual environment deploys
 
 name: Deploy Worker
 
@@ -13,9 +15,10 @@ on:
       environment:
         description: 'Environment to deploy'
         required: true
-        default: 'staging'
+        default: 'both'
         type: choice
         options:
+          - both
           - staging
           - production
 
@@ -23,7 +26,10 @@ jobs:
   deploy-staging:
     name: Deploy to Staging
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'staging')
+    if: |
+      github.event_name == 'push' || 
+      github.event.inputs.environment == 'staging' || 
+      github.event.inputs.environment == 'both'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -54,8 +60,11 @@ jobs:
   deploy-production:
     name: Deploy to Production
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production'
-    environment: production
+    needs: deploy-staging
+    if: |
+      github.event_name == 'push' || 
+      github.event.inputs.environment == 'production' || 
+      github.event.inputs.environment == 'both'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -80,3 +89,5 @@ jobs:
           echo "**URLs:**" >> $GITHUB_STEP_SUMMARY
           echo "- https://api.itai.gg" >> $GITHUB_STEP_SUMMARY
           echo "- https://api.emuy.gg" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
