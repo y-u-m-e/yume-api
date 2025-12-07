@@ -449,6 +449,10 @@ You don't have permission to view this content. Contact an administrator if you 
         "infographic-maker.js": {
           path: "dist/infographic-maker/infographic-maker.js",
           sha: env.SHA_INFOGRAPHIC_MAKER || "main"
+        },
+        "how-to.js": {
+          path: "dist/how-to/how-to.js",
+          sha: env.SHA_HOW_TO || "main"
         }
       };
       
