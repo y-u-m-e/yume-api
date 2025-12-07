@@ -314,9 +314,151 @@ export default {
       });
     }
 
+    // --- Admin User Management ---
+    const ADMIN_USER_IDS = ["166201366228762624"]; // Super admin Discord IDs
+    
+    // Helper to check if current user is admin
+    const isAdmin = (user) => user && ADMIN_USER_IDS.includes(user.userId);
+    
+    // GET /admin/users - Get all allowed users
+    if (method === "GET" && url.pathname === "/admin/users") {
+      const token = getTokenFromCookie(request);
+      const user = token ? verifyToken(token) : null;
+      
+      if (!isAdmin(user)) {
+        return new Response(JSON.stringify({ error: "Not authorized" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        // Try to get users from D1, create table if doesn't exist
+        await env.EVENT_TRACK_DB.prepare(`
+          CREATE TABLE IF NOT EXISTS admin_users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            discord_id TEXT UNIQUE NOT NULL,
+            username TEXT,
+            access_cruddy INTEGER DEFAULT 0,
+            access_docs INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+          )
+        `).run();
+        
+        const result = await env.EVENT_TRACK_DB.prepare(`
+          SELECT * FROM admin_users ORDER BY created_at DESC
+        `).all();
+        
+        // Also return env-based users for reference
+        return new Response(JSON.stringify({
+          users: result.results || [],
+          env_users: {
+            cruddy: allowedUsersCruddy,
+            docs: allowedUsersDocs
+          }
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+    
+    // POST /admin/users - Add a new allowed user
+    if (method === "POST" && url.pathname === "/admin/users") {
+      const token = getTokenFromCookie(request);
+      const user = token ? verifyToken(token) : null;
+      
+      if (!isAdmin(user)) {
+        return new Response(JSON.stringify({ error: "Not authorized" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        const body = await request.json();
+        const { discord_id, username, access_cruddy, access_docs } = body;
+        
+        if (!discord_id) {
+          return new Response(JSON.stringify({ error: "discord_id required" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Create table if doesn't exist
+        await env.EVENT_TRACK_DB.prepare(`
+          CREATE TABLE IF NOT EXISTS admin_users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            discord_id TEXT UNIQUE NOT NULL,
+            username TEXT,
+            access_cruddy INTEGER DEFAULT 0,
+            access_docs INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+          )
+        `).run();
+        
+        // Insert or update user
+        await env.EVENT_TRACK_DB.prepare(`
+          INSERT INTO admin_users (discord_id, username, access_cruddy, access_docs)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(discord_id) DO UPDATE SET
+            username = excluded.username,
+            access_cruddy = excluded.access_cruddy,
+            access_docs = excluded.access_docs
+        `).bind(discord_id, username || null, access_cruddy ? 1 : 0, access_docs ? 1 : 0).run();
+        
+        return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+    
+    // DELETE /admin/users/:discord_id - Remove a user
+    const deleteUserMatch = url.pathname.match(/^\/admin\/users\/(\d+)$/);
+    if (method === "DELETE" && deleteUserMatch) {
+      const token = getTokenFromCookie(request);
+      const user = token ? verifyToken(token) : null;
+      
+      if (!isAdmin(user)) {
+        return new Response(JSON.stringify({ error: "Not authorized" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      const discordId = deleteUserMatch[1];
+      
+      try {
+        await env.EVENT_TRACK_DB.prepare(`
+          DELETE FROM admin_users WHERE discord_id = ?
+        `).bind(discordId).run();
+        
+        return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
     // --- Admin Secrets Endpoint ---
     // Returns sensitive config only for authenticated admins
-    const ADMIN_USER_IDS = ["166201366228762624"]; // Admin Discord IDs
     
     if (method === "GET" && url.pathname === "/admin/secrets") {
       const token = getTokenFromCookie(request);
