@@ -314,6 +314,42 @@ export default {
       });
     }
 
+    // --- Admin Secrets Endpoint ---
+    // Returns sensitive config only for authenticated admins
+    const ADMIN_USER_IDS = ["166201366228762624"]; // Admin Discord IDs
+    
+    if (method === "GET" && url.pathname === "/admin/secrets") {
+      const token = getTokenFromCookie(request);
+      const user = token ? verifyToken(token) : null;
+      
+      if (!user) {
+        return new Response(JSON.stringify({ error: "Not authenticated" }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      if (!ADMIN_USER_IDS.includes(user.userId)) {
+        return new Response(JSON.stringify({ error: "Not authorized" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      // Return secrets for admin
+      return new Response(JSON.stringify({
+        github_pat: env.GITHUB_PAT || null,
+        cloudflare_account_id: env.CLOUDFLARE_ACCOUNT_ID || null
+      }), {
+        status: 200,
+        headers: { 
+          ...corsHeaders, 
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store, no-cache, must-revalidate"
+        }
+      });
+    }
+
     // --- Documentation Site (Public + Protected) ---
     // Some pages are public, others require authentication
     if (method === "GET" && url.pathname.startsWith("/docs")) {
