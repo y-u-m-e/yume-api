@@ -665,6 +665,113 @@ You don't have permission to view this content. Contact an administrator if you 
       }
     }
 
+    // --- Widget Heartbeat System ---
+    // Widgets ping this when they load on Carrd to report they're visible
+    
+    // POST /widget/heartbeat - Widget pings when it loads
+    if (method === "POST" && url.pathname === "/widget/heartbeat") {
+      try {
+        const body = await request.json();
+        const widgetName = sanitizeString(body.widget || "", 50);
+        const source = sanitizeString(body.source || "unknown", 100);
+        
+        if (!widgetName) {
+          return new Response(JSON.stringify({ error: "widget name required" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Create heartbeat table if doesn't exist
+        await env.EVENT_TRACK_DB.prepare(`
+          CREATE TABLE IF NOT EXISTS widget_heartbeats (
+            widget TEXT PRIMARY KEY,
+            last_ping TEXT NOT NULL,
+            source TEXT,
+            ping_count INTEGER DEFAULT 1
+          )
+        `).run();
+        
+        // Upsert heartbeat
+        await env.EVENT_TRACK_DB.prepare(`
+          INSERT INTO widget_heartbeats (widget, last_ping, source, ping_count)
+          VALUES (?, datetime('now'), ?, 1)
+          ON CONFLICT(widget) DO UPDATE SET
+            last_ping = datetime('now'),
+            source = excluded.source,
+            ping_count = ping_count + 1
+        `).bind(widgetName, source).run();
+        
+        return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Heartbeat error:", err);
+        return new Response(JSON.stringify({ error: "Failed to record heartbeat" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+    
+    // GET /widget/status - Get status of all widgets (public endpoint)
+    if (method === "GET" && url.pathname === "/widget/status") {
+      try {
+        // Create table if doesn't exist (for first-time queries)
+        await env.EVENT_TRACK_DB.prepare(`
+          CREATE TABLE IF NOT EXISTS widget_heartbeats (
+            widget TEXT PRIMARY KEY,
+            last_ping TEXT NOT NULL,
+            source TEXT,
+            ping_count INTEGER DEFAULT 1
+          )
+        `).run();
+        
+        const result = await env.EVENT_TRACK_DB.prepare(`
+          SELECT 
+            widget,
+            last_ping,
+            source,
+            ping_count,
+            CASE 
+              WHEN datetime(last_ping) > datetime('now', '-5 minutes') THEN 'online'
+              WHEN datetime(last_ping) > datetime('now', '-30 minutes') THEN 'recent'
+              WHEN datetime(last_ping) > datetime('now', '-24 hours') THEN 'stale'
+              ELSE 'offline'
+            END as status
+          FROM widget_heartbeats
+          ORDER BY last_ping DESC
+        `).all();
+        
+        // Map to object for easy lookup
+        const widgets = {};
+        for (const row of result.results || []) {
+          widgets[row.widget] = {
+            status: row.status,
+            lastPing: row.last_ping,
+            source: row.source,
+            pingCount: row.ping_count
+          };
+        }
+        
+        return new Response(JSON.stringify({ widgets }), {
+          status: 200,
+          headers: { 
+            ...corsHeaders, 
+            "Content-Type": "application/json",
+            "Cache-Control": "public, max-age=30" // Cache for 30 seconds
+          }
+        });
+      } catch (err) {
+        console.error("Widget status error:", err);
+        return new Response(JSON.stringify({ error: "Failed to get widget status" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
     // --- Widget CDN Proxy ---
     // Proxies jsDelivr with the configured SHA for instant cache-busting
     // Each widget has its own SHA env variable for independent versioning
