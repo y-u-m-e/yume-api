@@ -779,7 +779,7 @@ You don't have permission to view this content. Contact an administrator if you 
     //        https://api.itai.gg/cdn/cruddy-panel.js
     //        https://api.itai.gg/cdn/mention-widget.js
     const cdnMatch = url.pathname.match(/^\/cdn\/(.+\.js)$/);
-    if (cdnMatch && method === "GET") {
+    if (cdnMatch && (method === "GET" || method === "HEAD")) {
       const file = cdnMatch[1];
       
       // Map filenames to their paths and SHA env variables
@@ -818,9 +818,20 @@ You don't have permission to view this content. Contact an administrator if you 
       // Proxy the file instead of redirecting (fixes CORS issues with script tags)
       const cdnUrl = `https://cdn.jsdelivr.net/gh/y-u-m-e/yume-tools@${config.sha}/${config.path}`;
       try {
-        const cdnResponse = await fetch(cdnUrl);
+        const cdnResponse = await fetch(cdnUrl, { method: method === "HEAD" ? "HEAD" : "GET" });
         if (!cdnResponse.ok) {
-          return new Response("Failed to fetch widget", { status: 502, headers: corsHeaders });
+          return new Response(method === "HEAD" ? null : "Failed to fetch widget", { status: 502, headers: corsHeaders });
+        }
+        // For HEAD requests, just return headers
+        if (method === "HEAD") {
+          return new Response(null, {
+            status: 200,
+            headers: {
+              ...corsHeaders,
+              "Content-Type": "application/javascript",
+              "Cache-Control": "public, max-age=300"
+            }
+          });
         }
         const script = await cdnResponse.text();
         return new Response(script, {
