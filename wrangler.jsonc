@@ -53,6 +53,12 @@
 		// Cloudflare API (for DevOps panel to fetch Pages deployments)
 		// Note: CLOUDFLARE_API_TOKEN must be set as a secret via: npx wrangler secret put CLOUDFLARE_API_TOKEN
 		"CLOUDFLARE_ACCOUNT_ID": "e469b73f199408a0796fc241684711bf",
+		
+		// REQUIRED SECRETS (set via wrangler secret put <NAME>):
+		// - DISCORD_CLIENT_SECRET: Discord OAuth2 client secret
+		// - CLOUDFLARE_API_TOKEN: Cloudflare API token for Pages deployments
+		// - JWT_SECRET: Secret key for signing auth tokens (min 32 chars recommended)
+		// - GITHUB_PAT: GitHub Personal Access Token for workflow triggers
 		// Sesh Calendar Worker URL (for triggering syncs from DevOps panel)
 		"SESH_WORKER_URL": "https://sesh-calendar-worker.karlstraub7.workers.dev"
 	},

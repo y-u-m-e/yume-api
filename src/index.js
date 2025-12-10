@@ -3,14 +3,83 @@ export default {
     const { method } = request;
     const url = new URL(request.url);
 
+    // --- Allowed Origins (CORS Security) ---
+    const ALLOWED_ORIGINS = [
+      "https://itai.gg",
+      "https://www.itai.gg",
+      "https://yumes-tools.itai.gg",
+      "https://emuy.gg",
+      "https://www.emuy.gg",
+      "https://api.itai.gg",
+      "https://api.emuy.gg",
+      // Development
+      "http://localhost:5173",
+      "http://localhost:3000",
+      // Cloudflare Pages previews
+    ];
+    // Allow any *.pages.dev for Cloudflare Pages previews
+    const requestOrigin = request.headers.get("Origin");
+    const isAllowedOrigin = requestOrigin && (
+      ALLOWED_ORIGINS.includes(requestOrigin) ||
+      requestOrigin.endsWith(".pages.dev")
+    );
+    const corsOrigin = isAllowedOrigin ? requestOrigin : ALLOWED_ORIGINS[0];
+
     // --- CORS Headers Helper ---
-    const origin = request.headers.get("Origin") || "*";
     const corsHeaders = {
-      "Access-Control-Allow-Origin": origin,
+      "Access-Control-Allow-Origin": corsOrigin,
       "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, HEAD",
       "Access-Control-Allow-Headers": "Content-Type",
       "Access-Control-Allow-Credentials": "true"
     };
+
+    // --- Rate Limiting ---
+    // Uses Cloudflare's edge cache for distributed rate limiting
+    const clientIP = request.headers.get("CF-Connecting-IP") || "unknown";
+    const rateLimitKey = `rate:${clientIP}:${Math.floor(Date.now() / 60000)}`; // Per minute
+    const RATE_LIMIT = 120; // requests per minute
+    
+    // Skip rate limiting for health checks and CDN
+    const skipRateLimit = url.pathname === "/health" || url.pathname.startsWith("/cdn/");
+    
+    if (!skipRateLimit) {
+      try {
+        // Use D1 for simple rate limit tracking
+        await env.EVENT_TRACK_DB.prepare(`
+          CREATE TABLE IF NOT EXISTS rate_limits (
+            key TEXT PRIMARY KEY,
+            count INTEGER DEFAULT 1,
+            expires_at INTEGER
+          )
+        `).run();
+        
+        const now = Date.now();
+        const windowEnd = Math.floor(now / 60000) * 60000 + 60000;
+        
+        // Clean old entries and check/increment
+        await env.EVENT_TRACK_DB.prepare(`DELETE FROM rate_limits WHERE expires_at < ?`).bind(now).run();
+        
+        const result = await env.EVENT_TRACK_DB.prepare(`
+          INSERT INTO rate_limits (key, count, expires_at) VALUES (?, 1, ?)
+          ON CONFLICT(key) DO UPDATE SET count = count + 1
+          RETURNING count
+        `).bind(rateLimitKey, windowEnd).first();
+        
+        if (result && result.count > RATE_LIMIT) {
+          return new Response(JSON.stringify({ error: "Rate limit exceeded. Try again later." }), {
+            status: 429,
+            headers: { 
+              ...corsHeaders, 
+              "Content-Type": "application/json",
+              "Retry-After": "60"
+            }
+          });
+        }
+      } catch (e) {
+        // Don't block on rate limit errors, just log
+        console.error("Rate limit check failed:", e);
+      }
+    }
 
     // --- Input Sanitization Helpers ---
     // Escape LIKE pattern special characters to prevent wildcard injection
@@ -73,31 +142,128 @@ export default {
 
     // --- Discord OAuth2 Authentication ---
     const DISCORD_API = "https://discord.com/api/v10";
-    // Separate whitelists for different features
+    
+    // Super admin Discord IDs (hardcoded for security - can't be modified via D1)
+    const ADMIN_USER_IDS = ["166201366228762624"];
+    
+    // Legacy env-based whitelists (fallback only - prefer D1 database)
     const allowedUsersDocs = (env.ALLOWED_USER_IDS_DOCS || "").split(",").map(id => id.trim()).filter(Boolean);
     const allowedUsersCruddy = (env.ALLOWED_USER_IDS_CRUDDY || "").split(",").map(id => id.trim()).filter(Boolean);
-    // Legacy fallback - if specific lists are empty, fall back to general list
     const allowedUsersGeneral = (env.ALLOWED_USER_IDS || "").split(",").map(id => id.trim()).filter(Boolean);
     
-    // Helper to check if user has access to a feature
-    const hasAccess = (userId, featureList) => {
-      if (featureList.length > 0) return featureList.includes(userId);
-      return allowedUsersGeneral.includes(userId); // Fallback to general list
-    };
-
-    // Helper: Create a simple signed token (base64 encoded JSON with timestamp)
-    const createToken = (userId, username, avatar) => {
-      const payload = { userId, username, avatar, exp: Date.now() + 7 * 24 * 60 * 60 * 1000 }; // 7 days
-      return btoa(JSON.stringify(payload));
-    };
-
-    // Helper: Verify and decode token
-    const verifyToken = (token) => {
+    // Helper: Get user permissions from D1 database
+    const getUserPermissions = async (userId) => {
       try {
-        const payload = JSON.parse(atob(token));
-        if (payload.exp < Date.now()) return null;
+        const result = await env.EVENT_TRACK_DB.prepare(`
+          SELECT * FROM admin_users WHERE discord_id = ?
+        `).bind(userId).first();
+        
+        if (result) {
+          return {
+            found: true,
+            isAdmin: result.is_admin === 1,
+            isBanned: result.is_banned === 1,
+            access: {
+              cruddy: result.access_cruddy === 1,
+              docs: result.access_docs === 1,
+              devops: result.access_devops === 1,
+              infographic: result.access_infographic === 1
+            }
+          };
+        }
+        return { found: false };
+      } catch (e) {
+        console.error("Error fetching user permissions:", e);
+        return { found: false };
+      }
+    };
+    
+    // Helper to check if user has access to a feature (checks D1 first, then env fallback)
+    const hasAccess = async (userId, feature) => {
+      // Check D1 database first
+      const perms = await getUserPermissions(userId);
+      
+      // If user is banned, deny all access
+      if (perms.isBanned) return false;
+      
+      // If user is admin, grant all access
+      if (perms.isAdmin) return true;
+      
+      // If user found in D1, use those permissions
+      if (perms.found) {
+        return perms.access[feature] === true;
+      }
+      
+      // Fallback to legacy env-based whitelist
+      switch (feature) {
+        case 'docs': return allowedUsersDocs.includes(userId);
+        case 'cruddy': return allowedUsersCruddy.includes(userId);
+        case 'devops': return allowedUsersGeneral.includes(userId);
+        case 'infographic': return allowedUsersCruddy.includes(userId);
+        default: return allowedUsersGeneral.includes(userId);
+      }
+    };
+
+    // --- HMAC Token Signing ---
+    // Creates cryptographically signed tokens that can't be forged
+    const JWT_SECRET = env.JWT_SECRET || "default-dev-secret-change-in-production";
+    
+    // Helper: Create HMAC signature
+    const createHmacSignature = async (data) => {
+      const encoder = new TextEncoder();
+      const key = await crypto.subtle.importKey(
+        "raw",
+        encoder.encode(JWT_SECRET),
+        { name: "HMAC", hash: "SHA-256" },
+        false,
+        ["sign"]
+      );
+      const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(data));
+      return btoa(String.fromCharCode(...new Uint8Array(signature)))
+        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+    };
+    
+    // Helper: Verify HMAC signature
+    const verifyHmacSignature = async (data, signature) => {
+      const expectedSig = await createHmacSignature(data);
+      return signature === expectedSig;
+    };
+
+    // Helper: Create a signed token (HMAC-SHA256)
+    const createToken = async (userId, username, avatar, globalName) => {
+      const payload = { 
+        userId, 
+        username, 
+        avatar, 
+        globalName,
+        exp: Date.now() + 7 * 24 * 60 * 60 * 1000 // 7 days
+      };
+      const data = btoa(JSON.stringify(payload));
+      const signature = await createHmacSignature(data);
+      return `${data}.${signature}`;
+    };
+
+    // Helper: Verify and decode signed token
+    const verifyToken = async (token) => {
+      try {
+        const [data, signature] = token.split('.');
+        if (!data || !signature) return null;
+        
+        // Verify signature
+        const isValid = await verifyHmacSignature(data, signature);
+        if (!isValid) {
+          console.log("Token signature invalid");
+          return null;
+        }
+        
+        const payload = JSON.parse(atob(data));
+        if (payload.exp < Date.now()) {
+          console.log("Token expired");
+          return null;
+        }
         return payload;
-      } catch {
+      } catch (e) {
+        console.error("Token verification error:", e);
         return null;
       }
     };
@@ -190,7 +356,7 @@ export default {
         const user = await userResponse.json();
 
         // Create session token
-        const sessionToken = createToken(user.id, user.username, user.avatar);
+        const sessionToken = await createToken(user.id, user.username, user.avatar, user.global_name);
 
         // Decode return URL from state
         let returnUrl = "https://yumes-tools.itai.gg/";
@@ -232,7 +398,7 @@ export default {
     if (method === "GET" && url.pathname === "/auth/me") {
       const cookieHeader = request.headers.get("Cookie") || "(no cookie header)";
       const token = getTokenFromCookie(request);
-      const user = token ? verifyToken(token) : null;
+      const user = token ? await verifyToken(token) : null;
 
       // Debug logging
       console.log("=== AUTH DEBUG ===");
@@ -256,26 +422,60 @@ export default {
         });
       }
 
-      // Check access for each feature
-      const canAccessDocs = hasAccess(user.userId, allowedUsersDocs);
-      const canAccessCruddy = hasAccess(user.userId, allowedUsersCruddy);
+      // Get full permissions from D1
+      const perms = await getUserPermissions(user.userId);
+      
+      // Check if user is banned
+      if (perms.isBanned) {
+        return new Response(JSON.stringify({
+          authenticated: true,
+          authorized: false,
+          banned: true,
+          access: { docs: false, cruddy: false, devops: false, infographic: false },
+          user: { id: user.userId, username: user.username, avatar: user.avatar }
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      // Check access for each feature (async)
+      const canAccessDocs = await hasAccess(user.userId, 'docs');
+      const canAccessCruddy = await hasAccess(user.userId, 'cruddy');
+      const canAccessDevops = await hasAccess(user.userId, 'devops');
+      const canAccessInfographic = await hasAccess(user.userId, 'infographic');
+      
       // Legacy: "authorized" = has access to cruddy panel (backward compatible)
       const isAuthorized = canAccessCruddy;
+      const isAdmin = perms.isAdmin || ADMIN_USER_IDS.includes(user.userId);
       
       console.log("User ID:", user.userId);
-      console.log("Access - Docs:", canAccessDocs, "Cruddy:", canAccessCruddy);
+      console.log("Access - Admin:", isAdmin, "Docs:", canAccessDocs, "Cruddy:", canAccessCruddy);
+      
+      // Update last login time in D1 (fire and forget)
+      if (perms.found) {
+        ctx.waitUntil(
+          env.EVENT_TRACK_DB.prepare(`
+            UPDATE admin_users SET last_login = datetime('now') WHERE discord_id = ?
+          `).bind(user.userId).run()
+        );
+      }
 
       return new Response(JSON.stringify({
         authenticated: true,
         authorized: isAuthorized,
+        isAdmin,
         access: {
           docs: canAccessDocs,
-          cruddy: canAccessCruddy
+          cruddy: canAccessCruddy,
+          devops: canAccessDevops,
+          infographic: canAccessInfographic
         },
         user: {
           id: user.userId,
           username: user.username,
-          avatar: user.avatar
+          avatar: user.avatar,
+          globalName: user.globalName
         }
       }), {
         status: 200,
@@ -315,17 +515,22 @@ export default {
     }
 
     // --- Admin User Management ---
-    const ADMIN_USER_IDS = ["166201366228762624"]; // Super admin Discord IDs
-    
-    // Helper to check if current user is admin
-    const isAdmin = (user) => user && ADMIN_USER_IDS.includes(user.userId);
+    // Helper to check if current user is admin (checks hardcoded list OR D1 is_admin flag)
+    const isAdmin = async (user) => {
+      if (!user) return false;
+      // Hardcoded super admins always have access
+      if (ADMIN_USER_IDS.includes(user.userId)) return true;
+      // Check D1 for admin flag
+      const perms = await getUserPermissions(user.userId);
+      return perms.isAdmin === true;
+    };
     
     // GET /admin/users - Get all allowed users
     if (method === "GET" && url.pathname === "/admin/users") {
       const token = getTokenFromCookie(request);
-      const user = token ? verifyToken(token) : null;
+      const user = token ? await verifyToken(token) : null;
       
-      if (!isAdmin(user)) {
+      if (!await isAdmin(user)) {
         return new Response(JSON.stringify({ error: "Not authorized" }), {
           status: 403,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -334,19 +539,37 @@ export default {
       
       try {
         // Try to get users from D1, create table if doesn't exist
+        // Enhanced with more granular permissions
         await env.EVENT_TRACK_DB.prepare(`
           CREATE TABLE IF NOT EXISTS admin_users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             discord_id TEXT UNIQUE NOT NULL,
             username TEXT,
+            global_name TEXT,
+            avatar TEXT,
+            is_admin INTEGER DEFAULT 0,
             access_cruddy INTEGER DEFAULT 0,
             access_docs INTEGER DEFAULT 0,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            access_devops INTEGER DEFAULT 0,
+            access_infographic INTEGER DEFAULT 0,
+            is_banned INTEGER DEFAULT 0,
+            notes TEXT,
+            last_login TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
           )
         `).run();
         
+        // Add new columns if they don't exist (for migration)
+        const columns = ['is_admin', 'access_devops', 'access_infographic', 'is_banned', 'notes', 'last_login', 'updated_at', 'global_name', 'avatar'];
+        for (const col of columns) {
+          try {
+            await env.EVENT_TRACK_DB.prepare(`ALTER TABLE admin_users ADD COLUMN ${col} ${col.startsWith('is_') || col.startsWith('access_') ? 'INTEGER DEFAULT 0' : 'TEXT'}`).run();
+          } catch (e) { /* Column likely exists */ }
+        }
+        
         const result = await env.EVENT_TRACK_DB.prepare(`
-          SELECT * FROM admin_users ORDER BY created_at DESC
+          SELECT * FROM admin_users ORDER BY is_admin DESC, created_at DESC
         `).all();
         
         // Also return env-based users for reference
@@ -371,9 +594,9 @@ export default {
     // POST /admin/users - Add a new allowed user
     if (method === "POST" && url.pathname === "/admin/users") {
       const token = getTokenFromCookie(request);
-      const user = token ? verifyToken(token) : null;
+      const user = token ? await verifyToken(token) : null;
       
-      if (!isAdmin(user)) {
+      if (!await isAdmin(user)) {
         return new Response(JSON.stringify({ error: "Not authorized" }), {
           status: 403,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -382,36 +605,66 @@ export default {
       
       try {
         const body = await request.json();
-        const { discord_id, username, access_cruddy, access_docs } = body;
+        const { 
+          discord_id, 
+          username, 
+          global_name,
+          avatar,
+          is_admin,
+          access_cruddy, 
+          access_docs,
+          access_devops,
+          access_infographic,
+          is_banned,
+          notes
+        } = body;
         
-        if (!discord_id) {
-          return new Response(JSON.stringify({ error: "discord_id required" }), {
+        // Validate discord_id format (17-20 digit number)
+        if (!discord_id || !/^\d{17,20}$/.test(discord_id)) {
+          return new Response(JSON.stringify({ error: "Invalid discord_id. Must be 17-20 digits." }), {
             status: 400,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
         }
         
-        // Create table if doesn't exist
-        await env.EVENT_TRACK_DB.prepare(`
-          CREATE TABLE IF NOT EXISTS admin_users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            discord_id TEXT UNIQUE NOT NULL,
-            username TEXT,
-            access_cruddy INTEGER DEFAULT 0,
-            access_docs INTEGER DEFAULT 0,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-          )
-        `).run();
+        // Sanitize text inputs
+        const sanitizedUsername = sanitizeString(username, 100);
+        const sanitizedGlobalName = sanitizeString(global_name, 100);
+        const sanitizedNotes = sanitizeString(notes, 500);
         
-        // Insert or update user
+        // Insert or update user with all permissions
         await env.EVENT_TRACK_DB.prepare(`
-          INSERT INTO admin_users (discord_id, username, access_cruddy, access_docs)
-          VALUES (?, ?, ?, ?)
+          INSERT INTO admin_users (
+            discord_id, username, global_name, avatar, is_admin,
+            access_cruddy, access_docs, access_devops, access_infographic,
+            is_banned, notes, updated_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
           ON CONFLICT(discord_id) DO UPDATE SET
             username = excluded.username,
+            global_name = excluded.global_name,
+            avatar = excluded.avatar,
+            is_admin = excluded.is_admin,
             access_cruddy = excluded.access_cruddy,
-            access_docs = excluded.access_docs
-        `).bind(discord_id, username || null, access_cruddy ? 1 : 0, access_docs ? 1 : 0).run();
+            access_docs = excluded.access_docs,
+            access_devops = excluded.access_devops,
+            access_infographic = excluded.access_infographic,
+            is_banned = excluded.is_banned,
+            notes = excluded.notes,
+            updated_at = datetime('now')
+        `).bind(
+          discord_id, 
+          sanitizedUsername || null, 
+          sanitizedGlobalName || null,
+          avatar || null,
+          is_admin ? 1 : 0,
+          access_cruddy ? 1 : 0, 
+          access_docs ? 1 : 0,
+          access_devops ? 1 : 0,
+          access_infographic ? 1 : 0,
+          is_banned ? 1 : 0,
+          sanitizedNotes || null
+        ).run();
         
         return new Response(JSON.stringify({ success: true }), {
           status: 200,
@@ -429,9 +682,9 @@ export default {
     const deleteUserMatch = url.pathname.match(/^\/admin\/users\/(\d+)$/);
     if (method === "DELETE" && deleteUserMatch) {
       const token = getTokenFromCookie(request);
-      const user = token ? verifyToken(token) : null;
+      const user = token ? await verifyToken(token) : null;
       
-      if (!isAdmin(user)) {
+      if (!await isAdmin(user)) {
         return new Response(JSON.stringify({ error: "Not authorized" }), {
           status: 403,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -462,7 +715,7 @@ export default {
     
     if (method === "GET" && url.pathname === "/admin/secrets") {
       const token = getTokenFromCookie(request);
-      const user = token ? verifyToken(token) : null;
+      const user = token ? await verifyToken(token) : null;
       
       if (!user) {
         return new Response(JSON.stringify({ error: "Not authenticated" }), {
@@ -496,7 +749,7 @@ export default {
     // Fetches deployment history for a Pages project
     if (method === "GET" && url.pathname === "/admin/cf-deployments") {
       const token = getTokenFromCookie(request);
-      const user = token ? verifyToken(token) : null;
+      const user = token ? await verifyToken(token) : null;
       
       if (!user || !ADMIN_USER_IDS.includes(user.userId)) {
         return new Response(JSON.stringify({ error: "Not authorized" }), {
@@ -567,7 +820,7 @@ export default {
     // GET /admin/sesh-worker/status - Get worker status
     if (method === "GET" && url.pathname === "/admin/sesh-worker/status") {
       const token = getTokenFromCookie(request);
-      const user = token ? verifyToken(token) : null;
+      const user = token ? await verifyToken(token) : null;
       
       if (!user || !ADMIN_USER_IDS.includes(user.userId)) {
         return new Response(JSON.stringify({ error: "Not authorized" }), {
@@ -609,7 +862,7 @@ export default {
     // GET /admin/sesh-worker/config - Get worker configuration
     if (method === "GET" && url.pathname === "/admin/sesh-worker/config") {
       const token = getTokenFromCookie(request);
-      const user = token ? verifyToken(token) : null;
+      const user = token ? await verifyToken(token) : null;
       
       if (!user || !ADMIN_USER_IDS.includes(user.userId)) {
         return new Response(JSON.stringify({ error: "Not authorized" }), {
@@ -644,7 +897,7 @@ export default {
     // POST /admin/sesh-worker/sync - Trigger manual sync
     if (method === "POST" && url.pathname === "/admin/sesh-worker/sync") {
       const token = getTokenFromCookie(request);
-      const user = token ? verifyToken(token) : null;
+      const user = token ? await verifyToken(token) : null;
       
       if (!user || !ADMIN_USER_IDS.includes(user.userId)) {
         return new Response(JSON.stringify({ error: "Not authorized" }), {
@@ -706,8 +959,8 @@ export default {
       
       // Check authentication
       const token = getTokenFromCookie(request);
-      const user = token ? verifyToken(token) : null;
-      const canAccessDocs = user ? hasAccess(user.userId, allowedUsersDocs) : false;
+      const user = token ? await verifyToken(token) : null;
+      const canAccessDocs = user ? await hasAccess(user.userId, 'docs') : false;
       
       const sha = env.SHA_DOCS || "main";
       
@@ -833,7 +1086,7 @@ You don't have permission to view this content. Contact an administrator if you 
     // POST /admin/widget/ping - Admin endpoint to manually trigger heartbeats (for testing)
     if (method === "POST" && url.pathname === "/admin/widget/ping") {
       const token = getTokenFromCookie(request);
-      const user = token ? verifyToken(token) : null;
+      const user = token ? await verifyToken(token) : null;
       
       if (!user || !ADMIN_USER_IDS.includes(user.userId)) {
         return new Response(JSON.stringify({ error: "Not authorized" }), {
