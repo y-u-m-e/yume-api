@@ -52,7 +52,9 @@
 		"ALLOWED_USER_IDS": "166201366228762624",
 		// Cloudflare API (for DevOps panel to fetch Pages deployments)
 		// Note: CLOUDFLARE_API_TOKEN must be set as a secret via: npx wrangler secret put CLOUDFLARE_API_TOKEN
-		"CLOUDFLARE_ACCOUNT_ID": "e469b73f199408a0796fc241684711bf"
+		"CLOUDFLARE_ACCOUNT_ID": "e469b73f199408a0796fc241684711bf",
+		// Sesh Calendar Worker URL (for triggering syncs from DevOps panel)
+		"SESH_WORKER_URL": "https://sesh-calendar-worker.karlstraub7.workers.dev"
 	},
 
 	/**
@@ -90,7 +92,8 @@
 				"DISCORD_REDIRECT_URI": "https://api-staging.itai.gg/auth/callback",
 				"ALLOWED_USER_IDS_DOCS": "166201366228762624, 667951474856427520, 402576224800473098",
 				"ALLOWED_USER_IDS_CRUDDY": "166201366228762624, 667951474856427520, 402576224800473098",
-				"ALLOWED_USER_IDS": "166201366228762624, 667951474856427520, 402576224800473098"
+				"ALLOWED_USER_IDS": "166201366228762624, 667951474856427520, 402576224800473098",
+				"SESH_WORKER_URL": "https://sesh-calendar-worker.karlstraub7.workers.dev"
 			}
 		}
 	}

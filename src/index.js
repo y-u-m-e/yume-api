@@ -561,6 +561,121 @@ export default {
       }
     }
 
+    // --- Sesh Calendar Worker Management ---
+    // Proxy endpoints to the sesh-calendar-worker
+    
+    // GET /admin/sesh-worker/status - Get worker status
+    if (method === "GET" && url.pathname === "/admin/sesh-worker/status") {
+      const token = getTokenFromCookie(request);
+      const user = token ? verifyToken(token) : null;
+      
+      if (!user || !ADMIN_USER_IDS.includes(user.userId)) {
+        return new Response(JSON.stringify({ error: "Not authorized" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      const workerUrl = env.SESH_WORKER_URL;
+      if (!workerUrl) {
+        return new Response(JSON.stringify({ 
+          error: "Sesh worker URL not configured",
+          configured: false 
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        const response = await fetch(`${workerUrl}/status`);
+        const data = await response.json();
+        return new Response(JSON.stringify({ ...data, configured: true }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ 
+          error: "Failed to reach sesh worker",
+          configured: true,
+          message: err.message 
+        }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+    
+    // GET /admin/sesh-worker/config - Get worker configuration
+    if (method === "GET" && url.pathname === "/admin/sesh-worker/config") {
+      const token = getTokenFromCookie(request);
+      const user = token ? verifyToken(token) : null;
+      
+      if (!user || !ADMIN_USER_IDS.includes(user.userId)) {
+        return new Response(JSON.stringify({ error: "Not authorized" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      const workerUrl = env.SESH_WORKER_URL;
+      if (!workerUrl) {
+        return new Response(JSON.stringify({ error: "Sesh worker URL not configured" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        const response = await fetch(`${workerUrl}/config`);
+        const data = await response.json();
+        return new Response(JSON.stringify(data), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: "Failed to get sesh worker config" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+    
+    // POST /admin/sesh-worker/sync - Trigger manual sync
+    if (method === "POST" && url.pathname === "/admin/sesh-worker/sync") {
+      const token = getTokenFromCookie(request);
+      const user = token ? verifyToken(token) : null;
+      
+      if (!user || !ADMIN_USER_IDS.includes(user.userId)) {
+        return new Response(JSON.stringify({ error: "Not authorized" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      const workerUrl = env.SESH_WORKER_URL;
+      if (!workerUrl) {
+        return new Response(JSON.stringify({ error: "Sesh worker URL not configured" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        const response = await fetch(`${workerUrl}/sync`, { method: "POST" });
+        const data = await response.json();
+        return new Response(JSON.stringify(data), {
+          status: response.status,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: "Failed to trigger sesh worker sync" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
     // --- Documentation Site (Public + Protected) ---
     // Some pages are public, others require authentication
     if (method === "GET" && url.pathname.startsWith("/docs")) {
