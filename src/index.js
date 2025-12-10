@@ -830,6 +830,59 @@ You don't have permission to view this content. Contact an administrator if you 
       }
     }
     
+    // POST /admin/widget/ping - Admin endpoint to manually trigger heartbeats (for testing)
+    if (method === "POST" && url.pathname === "/admin/widget/ping") {
+      const token = getTokenFromCookie(request);
+      const user = token ? verifyToken(token) : null;
+      
+      if (!user || !ADMIN_USER_IDS.includes(user.userId)) {
+        return new Response(JSON.stringify({ error: "Not authorized" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        // Create table if doesn't exist
+        await env.EVENT_TRACK_DB.prepare(`
+          CREATE TABLE IF NOT EXISTS widget_heartbeats (
+            widget TEXT PRIMARY KEY,
+            last_ping TEXT NOT NULL,
+            source TEXT,
+            ping_count INTEGER DEFAULT 1
+          )
+        `).run();
+        
+        // Ping all three widgets as "admin-test"
+        const widgets = ['mention-maker', 'event-parser', 'infographic-maker'];
+        for (const widget of widgets) {
+          await env.EVENT_TRACK_DB.prepare(`
+            INSERT INTO widget_heartbeats (widget, last_ping, source, ping_count)
+            VALUES (?, datetime('now'), 'admin-devops', 1)
+            ON CONFLICT(widget) DO UPDATE SET
+              last_ping = datetime('now'),
+              source = 'admin-devops',
+              ping_count = ping_count + 1
+          `).bind(widget).run();
+        }
+        
+        return new Response(JSON.stringify({ 
+          success: true, 
+          message: "Heartbeats updated for all widgets",
+          widgets 
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Admin heartbeat error:", err);
+        return new Response(JSON.stringify({ error: "Failed to update heartbeats" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
     // GET /widget/status - Get status of all widgets (public endpoint)
     if (method === "GET" && url.pathname === "/widget/status") {
       try {
