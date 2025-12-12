@@ -2307,10 +2307,11 @@ You don't have permission to view this content. Contact an administrator if you 
         });
         
         // Generate secure API URL for the image (served through authenticated endpoint)
+        // Note: imageKey already includes 'submissions/' prefix, so we just use /r2/ as the endpoint
         const apiOrigin = url.origin;
-        const imageUrl = `${apiOrigin}/submissions/image/${imageKey}`;
+        const imageUrl = `${apiOrigin}/r2/${imageKey}`;
         
-        // Run OCR if AI binding is available
+        // Run AI Vision analysis if AI binding is available
         let ocrText = null;
         let aiConfidence = null;
         let aiResult = null;
@@ -2318,45 +2319,63 @@ You don't have permission to view this content. Contact an administrator if you 
         
         if (env.AI) {
           try {
-            // Use Cloudflare Workers AI for OCR
-            const ocrResponse = await env.AI.run("@cf/microsoft/resnet-50", {
+            console.log("Running AI vision analysis...");
+            
+            // Use LLaVA vision-language model for OSRS screenshot analysis
+            // Build a dynamic prompt based on tile info
+            const tileContext = tile.unlock_keywords 
+              ? `Look for these specific items or achievements: ${tile.unlock_keywords}`
+              : `Look for any notable items, drops, achievements, or game activity`;
+            
+            const visionPrompt = `Analyze this Old School RuneScape (OSRS) screenshot. 
+${tileContext}
+
+Please describe:
+1. What activity or achievement is shown
+2. Any item drops or rewards visible
+3. Any text visible in chat or interfaces
+4. Player name if visible
+
+Be concise and focus on verifiable details.`;
+            
+            const visionResponse = await env.AI.run("@cf/llava-hf/llava-1.5-7b-hf", {
+              prompt: visionPrompt,
               image: [...new Uint8Array(imageBuffer)]
             });
             
-            // For now, we'll use a simple approach - future enhancement with proper OCR model
-            // Try to use llava for image understanding if available
-            try {
-              const visionResponse = await env.AI.run("@cf/llava-hf/llava-1.5-7b-hf", {
-                prompt: `Look at this OSRS (Old School RuneScape) screenshot. What items or drops do you see? List any notable items, especially rare drops.`,
-                image: [...new Uint8Array(imageBuffer)]
-              });
+            console.log("AI Vision response:", JSON.stringify(visionResponse));
+            
+            if (visionResponse && (visionResponse.response || visionResponse.description)) {
+              ocrText = visionResponse.response || visionResponse.description;
+              aiResult = 'analyzed';
               
-              if (visionResponse && visionResponse.response) {
-                ocrText = visionResponse.response;
+              // Check if OCR text matches tile unlock keywords for auto-approval
+              if (tile.unlock_keywords && ocrText) {
+                const keywords = tile.unlock_keywords.toLowerCase().split(',').map(k => k.trim()).filter(k => k);
+                const ocrLower = ocrText.toLowerCase();
+                const foundKeywords = keywords.filter(keyword => ocrLower.includes(keyword));
                 
-                // Check if OCR text matches tile unlock keywords
-                if (tile.unlock_keywords) {
-                  const keywords = tile.unlock_keywords.toLowerCase().split(',').map(k => k.trim());
-                  const foundKeywords = keywords.filter(keyword => 
-                    ocrText.toLowerCase().includes(keyword)
-                  );
-                  
-                  aiConfidence = foundKeywords.length / keywords.length;
-                  aiResult = foundKeywords.length > 0 ? 'match' : 'no_match';
-                  
-                  // Auto-approve if high confidence
-                  if (aiConfidence >= 0.8) {
-                    autoApproved = true;
-                  }
+                // Calculate confidence based on keyword matches
+                aiConfidence = keywords.length > 0 ? foundKeywords.length / keywords.length : 0;
+                aiResult = foundKeywords.length > 0 ? `match: ${foundKeywords.join(', ')}` : 'no_match';
+                
+                console.log(`AI keyword matching: ${foundKeywords.length}/${keywords.length} keywords found`);
+                
+                // Auto-approve if at least one keyword matches (adjust threshold as needed)
+                if (foundKeywords.length > 0) {
+                  autoApproved = true;
+                  console.log("Auto-approving submission based on keyword match");
                 }
               }
-            } catch (visionErr) {
-              console.log("Vision AI not available:", visionErr.message);
             }
           } catch (aiErr) {
-            console.log("AI OCR failed:", aiErr.message);
+            console.error("AI Vision failed:", aiErr.message, aiErr.stack);
+            aiResult = `error: ${aiErr.message}`;
             // Continue without AI - submission goes to manual review
           }
+        } else {
+          console.log("AI binding not available, skipping auto-scan");
+          aiResult = 'ai_unavailable';
         }
         
         // Create submission record
@@ -2890,13 +2909,14 @@ You don't have permission to view this content. Contact an administrator if you 
           const description = sanitizeString(tile.description || '', 500);
           const imageUrl = sanitizeString(tile.image_url || '', 500);
           const reward = sanitizeString(tile.reward || '', 200);
+          const unlockKeywords = sanitizeString(tile.unlock_keywords || '', 500);
           const isStart = tile.is_start ? 1 : 0;
           const isEnd = tile.is_end ? 1 : 0;
           
           await env.EVENT_TRACK_DB.prepare(`
-            INSERT INTO tile_event_tiles (event_id, position, title, description, image_url, reward, is_start, is_end)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-          `).bind(eventId, position, title, description, imageUrl, reward, isStart, isEnd).run();
+            INSERT INTO tile_event_tiles (event_id, position, title, description, image_url, reward, is_start, is_end, unlock_keywords)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(eventId, position, title, description, imageUrl, reward, isStart, isEnd, unlockKeywords).run();
         }
         
         return new Response(JSON.stringify({ success: true, count: tiles.length }), {
@@ -2941,13 +2961,14 @@ You don't have permission to view this content. Contact an administrator if you 
           const description = sanitizeString(tile.description || '', 500);
           const imageUrl = sanitizeString(tile.image_url || '', 500);
           const reward = sanitizeString(tile.reward || '', 200);
+          const unlockKeywords = sanitizeString(tile.unlock_keywords || '', 500);
           const isStart = i === 0 ? 1 : 0;
           const isEnd = i === tiles.length - 1 ? 1 : 0;
           
           await env.EVENT_TRACK_DB.prepare(`
-            INSERT INTO tile_event_tiles (event_id, position, title, description, image_url, reward, is_start, is_end)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-          `).bind(eventId, position, title, description, imageUrl, reward, isStart, isEnd).run();
+            INSERT INTO tile_event_tiles (event_id, position, title, description, image_url, reward, is_start, is_end, unlock_keywords)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(eventId, position, title, description, imageUrl, reward, isStart, isEnd, unlockKeywords).run();
         }
         
         return new Response(JSON.stringify({ success: true, count: tiles.length }), {
@@ -3206,7 +3227,7 @@ You don't have permission to view this content. Contact an administrator if you 
         await env.EVENT_TRACK_DB.prepare(`DELETE FROM tile_event_tiles WHERE event_id = ?`).bind(eventId).run();
         
         // Insert tiles from sheet
-        // Expected columns: A=Title, B=Description, C=ImageURL, D=Reward
+        // Expected columns: A=Title, B=Description, C=ImageURL, D=Reward, E=Keywords (for AI auto-approval)
         let insertedCount = 0;
         for (let i = 0; i < dataRows.length; i++) {
           const row = dataRows[i];
@@ -3218,13 +3239,14 @@ You don't have permission to view this content. Contact an administrator if you 
           const description = sanitizeString(row[1] || '', 500);
           const imageUrl = sanitizeString(row[2] || '', 500);
           const reward = sanitizeString(row[3] || '', 200);
+          const unlockKeywords = sanitizeString(row[4] || '', 500);
           const isStart = i === 0 ? 1 : 0;
           const isEnd = i === dataRows.length - 1 ? 1 : 0;
           
           await env.EVENT_TRACK_DB.prepare(`
-            INSERT INTO tile_event_tiles (event_id, position, title, description, image_url, reward, is_start, is_end)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-          `).bind(eventId, i, title, description, imageUrl, reward, isStart, isEnd).run();
+            INSERT INTO tile_event_tiles (event_id, position, title, description, image_url, reward, is_start, is_end, unlock_keywords)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(eventId, i, title, description, imageUrl, reward, isStart, isEnd, unlockKeywords).run();
           
           insertedCount++;
         }
@@ -3448,30 +3470,30 @@ You don't have permission to view this content. Contact an administrator if you 
     // ========================================
     
     /**
-     * GET /submissions/image/:key - Serve submission images securely from R2
+     * GET /r2/submissions/:eventId/:userId/:filename - Serve submission images securely from R2
      * 
      * Security Features:
      * - Requires authentication (logged-in user)
      * - Users can only view their own submissions OR admins can view all
-     * - Generates signed URLs with expiry for added security
      * - Adds cache headers for performance
      * 
-     * URL Pattern: /submissions/image/{eventId}/{tileId}/{discordId}-{timestamp}.{ext}
+     * URL Pattern: /r2/submissions/{eventId}/{userId}/{tileId}_{timestamp}.{ext}
+     * Example: /r2/submissions/1/166201366228762624/5_1718457600000.png
      */
-    if (method === "GET" && url.pathname.startsWith("/submissions/image/")) {
-      // Extract the image key from the URL path (everything after /submissions/image/)
-      const imageKey = url.pathname.replace("/submissions/image/", "");
+    if (method === "GET" && url.pathname.startsWith("/r2/submissions/")) {
+      // Extract the image key from the URL path (everything after /r2/)
+      const imageKey = url.pathname.replace("/r2/", "");
       
-      // Validate image key format: submissions/{eventId}/{tileId}/{discordId}-{timestamp}.{ext}
-      const keyMatch = imageKey.match(/^submissions\/(\d+)\/(\d+)\/(\d+)-\d+\.(png|jpg|jpeg|gif|webp)$/i);
+      // Validate image key format: submissions/{eventId}/{userId}/{tileId}_{timestamp}.{ext}
+      const keyMatch = imageKey.match(/^submissions\/(\d+)\/(\d+)\/(\d+)_\d+\.(png|jpg|jpeg|gif|webp)$/i);
       if (!keyMatch) {
-        return new Response(JSON.stringify({ error: "Invalid image path" }), {
+        return new Response(JSON.stringify({ error: "Invalid image path", path: imageKey }), {
           status: 400,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
         });
       }
       
-      const [, eventId, , imageOwnerId] = keyMatch;
+      const [, eventId, imageOwnerId] = keyMatch;
       
       // Check authentication
       const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
