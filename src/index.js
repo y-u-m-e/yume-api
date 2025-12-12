@@ -1,23 +1,65 @@
-// =========================
-// Google Sheets Helpers (for Tile Events)
-// =========================
+/**
+ * =============================================================================
+ * YUME API - Cloudflare Worker
+ * =============================================================================
+ * 
+ * Main API backend for Yume Tools ecosystem. Handles:
+ * - Discord OAuth2 authentication
+ * - User permission management (D1 database)
+ * - Attendance tracking for clan events
+ * - Tile Event system (snake-style progression games)
+ * - Widget heartbeat monitoring
+ * - CDN proxy for jsDelivr assets
+ * 
+ * Deployed via GitHub Actions to Cloudflare Workers.
+ * Custom domains: api.emuy.gg, api.itai.gg
+ * 
+ * Database: Cloudflare D1 (SQLite)
+ * Authentication: Discord OAuth2 + HMAC-signed JWT tokens
+ * 
+ * @author Yume Tools Team
+ * @version 1.0.0
+ */
 
+// =============================================================================
+// GOOGLE SHEETS HELPERS
+// =============================================================================
+// These functions handle reading from public Google Sheets for the Tile Events
+// system. They support both authenticated (service account) and public access.
+
+/**
+ * Encode data to base64url format (used for JWT tokens)
+ * Base64url is a URL-safe variant of base64 encoding
+ * @param {string|ArrayBuffer} input - Data to encode
+ * @returns {string} Base64url encoded string
+ */
 function base64urlEncode(input) {
   let base64;
   if (typeof input === "string") {
     base64 = btoa(input);
   } else {
+    // Handle ArrayBuffer (for signatures)
     base64 = btoa(String.fromCharCode(...new Uint8Array(input)));
   }
+  // Convert standard base64 to base64url (replace +/ with -_ and remove padding)
   return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+/**
+ * Import a PEM-encoded private key for use with Web Crypto API
+ * Used for signing Google service account JWTs
+ * @param {string} pem - PEM-encoded private key
+ * @returns {Promise<CryptoKey>} Imported key for signing
+ */
 async function importPrivateKey(pem) {
+  // Strip PEM headers and whitespace to get raw base64
   const pemContents = pem
     .replace("-----BEGIN PRIVATE KEY-----", "")
     .replace("-----END PRIVATE KEY-----", "")
     .replace(/\s/g, "");
+  // Decode base64 to binary
   const binaryKey = Uint8Array.from(atob(pemContents), c => c.charCodeAt(0));
+  // Import as PKCS8 key for RSA signing
   return crypto.subtle.importKey(
     "pkcs8",
     binaryKey,
@@ -27,28 +69,45 @@ async function importPrivateKey(pem) {
   );
 }
 
+/**
+ * Create a JWT for Google service account authentication
+ * This is used when accessing private Google Sheets
+ * @param {string} serviceAccountEmail - Google service account email
+ * @param {string} privateKeyPem - PEM-encoded private key
+ * @returns {Promise<string>} Signed JWT token
+ */
 async function createGoogleJWT(serviceAccountEmail, privateKeyPem) {
   const header = { alg: "RS256", typ: "JWT" };
   const now = Math.floor(Date.now() / 1000);
   const payload = {
-    iss: serviceAccountEmail,
-    scope: "https://www.googleapis.com/auth/spreadsheets.readonly",
-    aud: "https://oauth2.googleapis.com/token",
-    iat: now,
-    exp: now + 3600
+    iss: serviceAccountEmail,           // Issuer (service account email)
+    scope: "https://www.googleapis.com/auth/spreadsheets.readonly", // Read-only access
+    aud: "https://oauth2.googleapis.com/token", // Token endpoint
+    iat: now,                           // Issued at
+    exp: now + 3600                     // Expires in 1 hour
   };
+  
+  // Create the unsigned token
   const encodedHeader = base64urlEncode(JSON.stringify(header));
   const encodedPayload = base64urlEncode(JSON.stringify(payload));
   const signatureInput = `${encodedHeader}.${encodedPayload}`;
+  
+  // Sign with private key
   const privateKey = await importPrivateKey(privateKeyPem);
   const signature = await crypto.subtle.sign(
     { name: "RSASSA-PKCS1-v1_5" },
     privateKey,
     new TextEncoder().encode(signatureInput)
   );
+  
   return `${signatureInput}.${base64urlEncode(signature)}`;
 }
 
+/**
+ * Exchange a JWT for a Google access token
+ * @param {string} jwt - Signed JWT token
+ * @returns {Promise<string>} Google access token
+ */
 async function getGoogleAccessToken(jwt) {
   const response = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
@@ -60,8 +119,18 @@ async function getGoogleAccessToken(jwt) {
   return data.access_token;
 }
 
+/**
+ * Read data from a PUBLIC Google Sheet (no authentication required)
+ * Uses Google's CSV export endpoint which works for publicly shared sheets.
+ * 
+ * @param {string} spreadsheetId - The ID from the Google Sheet URL
+ * @param {string} sheetName - The name of the tab/sheet to read
+ * @returns {Promise<string[][]>} 2D array of cell values
+ * @throws {Error} If sheet is not public or doesn't exist
+ */
 async function readGoogleSheetPublic(spreadsheetId, sheetName) {
-  // Use the public CSV export endpoint (works for public sheets)
+  // Google Sheets public CSV export endpoint
+  // This only works if the sheet is shared as "Anyone with the link can view"
   const csvUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
   const response = await fetch(csvUrl);
   
