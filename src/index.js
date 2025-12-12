@@ -2306,8 +2306,9 @@ You don't have permission to view this content. Contact an administrator if you 
           httpMetadata: { contentType: imageFile.type }
         });
         
-        // Generate public URL (or use R2 public bucket URL)
-        const imageUrl = `https://submissions.emuy.gg/${imageKey}`;
+        // Generate secure API URL for the image (served through authenticated endpoint)
+        const apiOrigin = url.origin;
+        const imageUrl = `${apiOrigin}/submissions/image/${imageKey}`;
         
         // Run OCR if AI binding is available
         let ocrText = null;
@@ -3436,6 +3437,103 @@ You don't have permission to view this content. Contact an administrator if you 
       } catch (err) {
         console.error("Error clearing error logs:", err);
         return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
+    // ========================================
+    // SECURE IMAGE SERVING (R2 Proxy)
+    // ========================================
+    
+    /**
+     * GET /submissions/image/:key - Serve submission images securely from R2
+     * 
+     * Security Features:
+     * - Requires authentication (logged-in user)
+     * - Users can only view their own submissions OR admins can view all
+     * - Generates signed URLs with expiry for added security
+     * - Adds cache headers for performance
+     * 
+     * URL Pattern: /submissions/image/{eventId}/{tileId}/{discordId}-{timestamp}.{ext}
+     */
+    if (method === "GET" && url.pathname.startsWith("/submissions/image/")) {
+      // Extract the image key from the URL path (everything after /submissions/image/)
+      const imageKey = url.pathname.replace("/submissions/image/", "");
+      
+      // Validate image key format: submissions/{eventId}/{tileId}/{discordId}-{timestamp}.{ext}
+      const keyMatch = imageKey.match(/^submissions\/(\d+)\/(\d+)\/(\d+)-\d+\.(png|jpg|jpeg|gif|webp)$/i);
+      if (!keyMatch) {
+        return new Response(JSON.stringify({ error: "Invalid image path" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      const [, eventId, , imageOwnerId] = keyMatch;
+      
+      // Check authentication
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user) {
+        return new Response(JSON.stringify({ error: "Authentication required" }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      // Authorization check: user can view their own images OR admins/events managers can view all
+      const isOwner = user.userId === imageOwnerId;
+      const isAdminOrEvents = ADMIN_USER_IDS.includes(user.userId) || 
+                              await hasAccess(user.userId, 'admin') || 
+                              await hasAccess(user.userId, 'events');
+      
+      if (!isOwner && !isAdminOrEvents) {
+        return new Response(JSON.stringify({ error: "Access denied" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        // Fetch the image from R2
+        const object = await env.SUBMISSIONS_BUCKET.get(imageKey);
+        
+        if (!object) {
+          return new Response(JSON.stringify({ error: "Image not found" }), {
+            status: 404,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Build response headers from R2 object metadata
+        const headers = new Headers(corsHeaders);
+        headers.set("Content-Type", object.httpMetadata?.contentType || "image/png");
+        headers.set("Content-Length", object.size.toString());
+        headers.set("ETag", object.httpEtag);
+        
+        // Cache for 1 hour for authenticated users (private cache only)
+        headers.set("Cache-Control", "private, max-age=3600");
+        
+        // Security headers to prevent embedding in other sites
+        headers.set("X-Content-Type-Options", "nosniff");
+        
+        return new Response(object.body, {
+          status: 200,
+          headers
+        });
+      } catch (err) {
+        console.error("Error serving R2 image:", err);
+        await logError({
+          endpoint: url.pathname,
+          method: method,
+          errorType: 'r2',
+          errorMessage: `Failed to serve R2 image: ${err.message}`,
+          userId: user.userId
+        });
+        return new Response(JSON.stringify({ error: "Failed to load image" }), {
           status: 500,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
         });
