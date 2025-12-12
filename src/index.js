@@ -3555,6 +3555,7 @@ Just the raw text, one element per line. Nothing else.`;
         const formData = await request.formData();
         const imageFile = formData.get("image");
         const keywords = formData.get("keywords")?.toString() || "";
+        const promptStyle = formData.get("promptStyle")?.toString() || "ocr";
         
         if (!imageFile || !(imageFile instanceof File)) {
           return new Response(JSON.stringify({ error: "No image file provided" }), {
@@ -3583,6 +3584,8 @@ Just the raw text, one element per line. Nothing else.`;
         let aiResult = null;
         let matchedKeywords = [];
         let allKeywords = [];
+        let rawResponse = null;
+        let promptUsed = '';
         
         // Parse keywords with special prefixes
         // "exact:" for exact phrase match
@@ -3608,11 +3611,10 @@ Just the raw text, one element per line. Nothing else.`;
         
         const imageSizeKB = Math.round(imageFile.size / 1024);
         
-        if (env.AI) {
-          console.log(`Running AI OCR debug scan on ${imageSizeKB}KB image...`);
-          
-          // OCR-focused prompt: Extract ONLY visible text, no interpretation
-          const ocrPrompt = `You are an OCR text extractor. Your ONLY job is to read and output the exact text visible in this image.
+        // Define different prompt styles to test
+        const prompts = {
+          // Style 1: Strict OCR mode
+          ocr: `You are an OCR text extractor. Your ONLY job is to read and output the exact text visible in this image.
 
 RULES:
 1. Output ONLY text that is clearly visible and readable in the image
@@ -3624,19 +3626,47 @@ RULES:
 7. Output "NO_TEXT_FOUND" if no readable text is visible
 
 OUTPUT FORMAT:
-Just the raw text, one element per line. Nothing else.`;
+Just the raw text, one element per line. Nothing else.`,
+          
+          // Style 2: Simple and direct
+          simple: `Read all the text in this image. Output only the exact words and text you can see. Do not describe the image. Just list the text.`,
+          
+          // Style 3: Game-focused
+          game: `This is a screenshot from Old School RuneScape. Read and list ALL text visible in the image including:
+- Chat messages
+- Drop notifications (like "Valuable drop:")  
+- Player names
+- Item names
+- Interface text
+- Any other visible text
+
+Output ONLY the text you can read, nothing else.`,
+          
+          // Style 4: Describe everything (for comparison)
+          describe: `Describe everything you see in this image in detail. Include any text, objects, colors, and activities visible.`,
+          
+          // Style 5: Very minimal
+          minimal: `What text is in this image?`
+        };
+        
+        promptUsed = prompts[promptStyle] || prompts.ocr;
+        
+        if (env.AI) {
+          console.log(`Running AI debug scan (style: ${promptStyle}) on ${imageSizeKB}KB image...`);
           
           try {
             const visionResponse = await env.AI.run("@cf/llava-hf/llava-1.5-7b-hf", {
-              prompt: ocrPrompt,
+              prompt: promptUsed,
               image: [...new Uint8Array(imageBuffer)]
             });
             
-            console.log("AI OCR response:", JSON.stringify(visionResponse));
+            // Store raw response for debugging
+            rawResponse = visionResponse;
+            console.log("AI raw response:", JSON.stringify(visionResponse));
             
             if (visionResponse && (visionResponse.response || visionResponse.description)) {
               ocrText = visionResponse.response || visionResponse.description;
-              aiResult = 'ocr_extracted';
+              aiResult = 'extracted';
               
               // Check keyword matches with word boundaries
               if ((exactPhrases.length > 0 || regularKeywords.length > 0) && ocrText && ocrText !== 'NO_TEXT_FOUND') {
@@ -3656,10 +3686,13 @@ Just the raw text, one element per line. Nothing else.`;
                 aiConfidence = totalKeywords > 0 ? matchedKeywords.length / totalKeywords : 0;
                 aiResult = matchedKeywords.length > 0 ? `match: ${matchedKeywords.join(', ')}` : 'no_match';
               }
+            } else {
+              aiResult = 'no_response';
             }
           } catch (aiErr) {
-            console.error("AI OCR failed:", aiErr);
+            console.error("AI failed:", aiErr);
             aiResult = `error: ${aiErr.message}`;
+            rawResponse = { error: aiErr.message, stack: aiErr.stack };
           }
         } else {
           aiResult = 'ai_unavailable';
@@ -3676,7 +3709,14 @@ Just the raw text, one element per line. Nothing else.`;
           requireAll,
           wouldAutoApprove: requireAll 
             ? matchedKeywords.length === allKeywords.length 
-            : matchedKeywords.length > 0
+            : matchedKeywords.length > 0,
+          // Debug info
+          debug: {
+            promptStyle,
+            promptUsed: promptUsed.substring(0, 200) + '...',
+            rawResponse,
+            model: '@cf/llava-hf/llava-1.5-7b-hf'
+          }
         }), {
           status: 200,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
