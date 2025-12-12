@@ -1,3 +1,76 @@
+// =========================
+// Google Sheets Helpers (for Tile Events)
+// =========================
+
+function base64urlEncode(input) {
+  let base64;
+  if (typeof input === "string") {
+    base64 = btoa(input);
+  } else {
+    base64 = btoa(String.fromCharCode(...new Uint8Array(input)));
+  }
+  return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function importPrivateKey(pem) {
+  const pemContents = pem
+    .replace("-----BEGIN PRIVATE KEY-----", "")
+    .replace("-----END PRIVATE KEY-----", "")
+    .replace(/\s/g, "");
+  const binaryKey = Uint8Array.from(atob(pemContents), c => c.charCodeAt(0));
+  return crypto.subtle.importKey(
+    "pkcs8",
+    binaryKey,
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+}
+
+async function createGoogleJWT(serviceAccountEmail, privateKeyPem) {
+  const header = { alg: "RS256", typ: "JWT" };
+  const now = Math.floor(Date.now() / 1000);
+  const payload = {
+    iss: serviceAccountEmail,
+    scope: "https://www.googleapis.com/auth/spreadsheets.readonly",
+    aud: "https://oauth2.googleapis.com/token",
+    iat: now,
+    exp: now + 3600
+  };
+  const encodedHeader = base64urlEncode(JSON.stringify(header));
+  const encodedPayload = base64urlEncode(JSON.stringify(payload));
+  const signatureInput = `${encodedHeader}.${encodedPayload}`;
+  const privateKey = await importPrivateKey(privateKeyPem);
+  const signature = await crypto.subtle.sign(
+    { name: "RSASSA-PKCS1-v1_5" },
+    privateKey,
+    new TextEncoder().encode(signatureInput)
+  );
+  return `${signatureInput}.${base64urlEncode(signature)}`;
+}
+
+async function getGoogleAccessToken(jwt) {
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${jwt}`
+  });
+  if (!response.ok) throw new Error(`Failed to get access token: ${await response.text()}`);
+  const data = await response.json();
+  return data.access_token;
+}
+
+async function readGoogleSheet(accessToken, spreadsheetId, sheetName) {
+  const range = `${sheetName}!A:D`; // Columns: Title, Description, ImageURL, Reward
+  const response = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  if (!response.ok) throw new Error(`Failed to read sheet: ${await response.text()}`);
+  const data = await response.json();
+  return data.values || [];
+}
+
 export default {
   async fetch(request, env, ctx) {
     const { method } = request;
@@ -2153,6 +2226,123 @@ You don't have permission to view this content. Contact an administrator if you 
         });
       } catch (err) {
         console.error("Error resetting user progress:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
+    // --- Admin: POST /admin/tile-events/:id/sync-sheet - Sync tiles from Google Sheet ---
+    if (method === "POST" && url.pathname.match(/^\/admin\/tile-events\/\d+\/sync-sheet$/)) {
+      const eventId = parseInt(url.pathname.split('/')[3]);
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !await hasAccess(user.userId, 'events')) {
+        return new Response(JSON.stringify({ error: "Events access required" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initTileEventTables();
+        
+        // Get event details including sheet info
+        const event = await env.EVENT_TRACK_DB.prepare(`
+          SELECT * FROM tile_events WHERE id = ?
+        `).bind(eventId).first();
+        
+        if (!event) {
+          return new Response(JSON.stringify({ error: "Event not found" }), {
+            status: 404,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Check if sheet is configured
+        if (!event.google_sheet_id || !event.google_sheet_tab) {
+          return new Response(JSON.stringify({ 
+            error: "Google Sheet not configured. Set sheet ID and tab name first." 
+          }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Check if Google credentials are available
+        if (!env.GOOGLE_SERVICE_ACCOUNT_EMAIL || !env.GOOGLE_PRIVATE_KEY) {
+          return new Response(JSON.stringify({ 
+            error: "Google credentials not configured. Add GOOGLE_SERVICE_ACCOUNT_EMAIL and GOOGLE_PRIVATE_KEY secrets." 
+          }), {
+            status: 500,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Authenticate with Google
+        const jwt = await createGoogleJWT(env.GOOGLE_SERVICE_ACCOUNT_EMAIL, env.GOOGLE_PRIVATE_KEY);
+        const accessToken = await getGoogleAccessToken(jwt);
+        
+        // Read from Google Sheet
+        const rows = await readGoogleSheet(accessToken, event.google_sheet_id, event.google_sheet_tab);
+        
+        if (rows.length === 0) {
+          return new Response(JSON.stringify({ 
+            error: "Sheet is empty or not found",
+            sheetId: event.google_sheet_id,
+            tab: event.google_sheet_tab
+          }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Skip header row if it looks like headers
+        const firstRow = rows[0];
+        const hasHeaders = firstRow[0]?.toLowerCase().includes('title') || 
+                          firstRow[0]?.toLowerCase().includes('name') ||
+                          firstRow[0]?.toLowerCase() === 'tile';
+        const dataRows = hasHeaders ? rows.slice(1) : rows;
+        
+        // Delete existing tiles
+        await env.EVENT_TRACK_DB.prepare(`DELETE FROM tile_event_tiles WHERE event_id = ?`).bind(eventId).run();
+        
+        // Insert tiles from sheet
+        // Expected columns: A=Title, B=Description, C=ImageURL, D=Reward
+        let insertedCount = 0;
+        for (let i = 0; i < dataRows.length; i++) {
+          const row = dataRows[i];
+          const title = sanitizeString(row[0] || '', 200);
+          
+          // Skip empty rows
+          if (!title) continue;
+          
+          const description = sanitizeString(row[1] || '', 500);
+          const imageUrl = sanitizeString(row[2] || '', 500);
+          const reward = sanitizeString(row[3] || '', 200);
+          const isStart = i === 0 ? 1 : 0;
+          const isEnd = i === dataRows.length - 1 ? 1 : 0;
+          
+          await env.EVENT_TRACK_DB.prepare(`
+            INSERT INTO tile_event_tiles (event_id, position, title, description, image_url, reward, is_start, is_end)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(eventId, i, title, description, imageUrl, reward, isStart, isEnd).run();
+          
+          insertedCount++;
+        }
+        
+        return new Response(JSON.stringify({ 
+          success: true, 
+          message: `Synced ${insertedCount} tiles from Google Sheet`,
+          tilesImported: insertedCount
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error syncing from sheet:", err);
         return new Response(JSON.stringify({ error: err.message }), {
           status: 500,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
