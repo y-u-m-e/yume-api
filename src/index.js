@@ -2327,8 +2327,15 @@ You don't have permission to view this content. Contact an administrator if you 
           try {
             console.log("Running OCR.space text extraction...");
             
-            // Convert image to base64 for OCR.space API
-            const base64Image = btoa(String.fromCharCode(...new Uint8Array(imageBuffer)));
+            // Convert image to base64 for OCR.space API (chunked to avoid stack overflow)
+            const uint8Array = new Uint8Array(imageBuffer);
+            let binary = '';
+            const chunkSize = 8192;
+            for (let i = 0; i < uint8Array.length; i += chunkSize) {
+              const chunk = uint8Array.subarray(i, i + chunkSize);
+              binary += String.fromCharCode.apply(null, chunk);
+            }
+            const base64Image = btoa(binary);
             
             const ocrFormData = new FormData();
             ocrFormData.append('base64Image', `data:${imageFile.type};base64,${base64Image}`);
@@ -3646,8 +3653,15 @@ You don't have permission to view this content. Contact an administrator if you 
           console.log(`Running OCR.space scan on ${imageSizeKB}KB image...`);
           
           try {
-            // Convert image to base64 for OCR.space API
-            const base64Image = btoa(String.fromCharCode(...new Uint8Array(imageBuffer)));
+            // Convert image to base64 for OCR.space API (chunked to avoid stack overflow)
+            const uint8Array = new Uint8Array(imageBuffer);
+            let binary = '';
+            const chunkSize = 8192;
+            for (let i = 0; i < uint8Array.length; i += chunkSize) {
+              const chunk = uint8Array.subarray(i, i + chunkSize);
+              binary += String.fromCharCode.apply(null, chunk);
+            }
+            const base64Image = btoa(binary);
             
             const ocrFormData = new FormData();
             ocrFormData.append('base64Image', `data:${imageFile.type};base64,${base64Image}`);
