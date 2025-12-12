@@ -3466,6 +3466,136 @@ Be concise and focus on verifiable details.`;
     }
 
     // ========================================
+    // AI DEBUG ENDPOINT
+    // ========================================
+    
+    /**
+     * POST /admin/ai-debug/scan - Test AI image scanning without saving
+     * 
+     * Allows admins to test AI scanning on images to:
+     * - See what text the AI extracts
+     * - Test keyword matching
+     * - Tune keywords before setting them on tiles
+     * 
+     * @body FormData with 'image' file and optional 'keywords' string
+     * @returns OCR text, matched keywords, confidence score
+     */
+    if (method === "POST" && url.pathname === "/admin/ai-debug/scan") {
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
+      const user = token ? await verifyToken(token) : null;
+      
+      // Only allow admins
+      if (!user || !ADMIN_USER_IDS.includes(user.userId)) {
+        return new Response(JSON.stringify({ error: "Admin access required" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        // Parse multipart form data
+        const contentType = request.headers.get("Content-Type") || "";
+        if (!contentType.includes("multipart/form-data")) {
+          return new Response(JSON.stringify({ error: "Must upload as multipart/form-data" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        const formData = await request.formData();
+        const imageFile = formData.get("image");
+        const keywords = formData.get("keywords")?.toString() || "";
+        
+        if (!imageFile || !(imageFile instanceof File)) {
+          return new Response(JSON.stringify({ error: "No image file provided" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Read image data
+        const imageBuffer = await imageFile.arrayBuffer();
+        
+        let ocrText = null;
+        let aiConfidence = null;
+        let aiResult = null;
+        let matchedKeywords = [];
+        let allKeywords = [];
+        
+        // Parse keywords
+        if (keywords.trim()) {
+          allKeywords = keywords.toLowerCase().split(',').map(k => k.trim()).filter(k => k);
+        }
+        
+        if (env.AI) {
+          console.log("Running AI debug scan...");
+          
+          // Build dynamic prompt
+          const keywordContext = allKeywords.length > 0 
+            ? `Look for these specific items or achievements: ${allKeywords.join(', ')}`
+            : `Look for any notable items, drops, achievements, or game activity`;
+          
+          const visionPrompt = `Analyze this Old School RuneScape (OSRS) screenshot. 
+${keywordContext}
+
+Please describe:
+1. What activity or achievement is shown
+2. Any item drops or rewards visible  
+3. Any text visible in chat or interfaces
+4. Player name if visible
+
+Be thorough and focus on verifiable details.`;
+          
+          try {
+            const visionResponse = await env.AI.run("@cf/llava-hf/llava-1.5-7b-hf", {
+              prompt: visionPrompt,
+              image: [...new Uint8Array(imageBuffer)]
+            });
+            
+            console.log("AI Vision response:", JSON.stringify(visionResponse));
+            
+            if (visionResponse && (visionResponse.response || visionResponse.description)) {
+              ocrText = visionResponse.response || visionResponse.description;
+              aiResult = 'analyzed';
+              
+              // Check keyword matches
+              if (allKeywords.length > 0 && ocrText) {
+                const ocrLower = ocrText.toLowerCase();
+                matchedKeywords = allKeywords.filter(keyword => ocrLower.includes(keyword));
+                aiConfidence = matchedKeywords.length / allKeywords.length;
+                aiResult = matchedKeywords.length > 0 ? `match: ${matchedKeywords.join(', ')}` : 'no_match';
+              }
+            }
+          } catch (aiErr) {
+            console.error("AI Vision failed:", aiErr);
+            aiResult = `error: ${aiErr.message}`;
+          }
+        } else {
+          aiResult = 'ai_unavailable';
+        }
+        
+        return new Response(JSON.stringify({
+          success: true,
+          ocrText,
+          aiResult,
+          aiConfidence,
+          matchedKeywords,
+          allKeywords
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+        
+      } catch (err) {
+        console.error("AI debug scan error:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
+    // ========================================
     // SECURE IMAGE SERVING (R2 Proxy)
     // ========================================
     
