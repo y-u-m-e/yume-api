@@ -27,13 +27,18 @@
 			"database_id": "91a4523b-99e5-49df-9456-b0aa69bbdb1a"
 		}
 	],
-	// R2 bucket for backups (enable R2 in Cloudflare dashboard first, then uncomment)
-	// "r2_buckets": [
-	// 	{
-	// 		"binding": "BACKUPS",
-	// 		"bucket_name": "yume-backups"
-	// 	}
-	// ],
+	// R2 bucket for tile submission screenshots
+	// Create bucket first: npx wrangler r2 bucket create yume-submissions
+	"r2_buckets": [
+		{
+			"binding": "SUBMISSIONS_BUCKET",
+			"bucket_name": "yume-submissions"
+		}
+	],
+	// Workers AI for OCR/image verification
+	"ai": {
+		"binding": "AI"
+	},
 	"vars": {
 		"ENVIRONMENT": "production",
 		"SHA_CRUDDY_PANEL": "2495c49",
@@ -85,6 +90,15 @@
 					"database_id": "91a4523b-99e5-49df-9456-b0aa69bbdb1a"
 				}
 			],
+			"r2_buckets": [
+				{
+					"binding": "SUBMISSIONS_BUCKET",
+					"bucket_name": "yume-submissions"
+				}
+			],
+			"ai": {
+				"binding": "AI"
+			},
 			"vars": {
 				"ENVIRONMENT": "staging",
 				"SHA_CRUDDY_PANEL": "main",

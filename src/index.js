@@ -1899,6 +1899,40 @@ You don't have permission to view this content. Contact an administrator if you 
           UNIQUE(event_id, discord_id)
         )
       `).run();
+      
+      // Tile completion submissions (screenshot proof)
+      // Status: pending, approved, rejected
+      await env.EVENT_TRACK_DB.prepare(`
+        CREATE TABLE IF NOT EXISTS tile_submissions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          event_id INTEGER NOT NULL,
+          tile_id INTEGER NOT NULL,
+          discord_id TEXT NOT NULL,
+          discord_username TEXT,
+          image_key TEXT NOT NULL,
+          image_url TEXT,
+          status TEXT DEFAULT 'pending',
+          ocr_text TEXT,
+          ai_confidence REAL,
+          ai_result TEXT,
+          admin_notes TEXT,
+          reviewed_by TEXT,
+          reviewed_at TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (event_id) REFERENCES tile_events(id) ON DELETE CASCADE,
+          FOREIGN KEY (tile_id) REFERENCES tile_event_tiles(id) ON DELETE CASCADE
+        )
+      `).run();
+      
+      // Add unlock_keywords column to tiles if it doesn't exist
+      // This stores keywords for OCR matching (comma-separated)
+      try {
+        await env.EVENT_TRACK_DB.prepare(`
+          ALTER TABLE tile_event_tiles ADD COLUMN unlock_keywords TEXT
+        `).run();
+      } catch (e) {
+        // Column already exists, ignore
+      }
     };
 
     // --- GET /tile-events - List all tile events ---
@@ -2135,6 +2169,512 @@ You don't have permission to view this content. Contact an administrator if you 
         });
       } catch (err) {
         console.error("Error leaving event:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
+    // ========================================
+    // TILE SUBMISSION SYSTEM (Screenshot Verification)
+    // ========================================
+    
+    // --- POST /tile-events/:eventId/tiles/:tileId/submit - Submit proof screenshot ---
+    if (method === "POST" && url.pathname.match(/^\/tile-events\/\d+\/tiles\/\d+\/submit$/)) {
+      const parts = url.pathname.split('/');
+      const eventId = parseInt(parts[2]);
+      const tileId = parseInt(parts[4]);
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
+      
+      if (!token) {
+        return new Response(JSON.stringify({ error: "Authentication required" }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      const user = await verifyToken(token);
+      if (!user) {
+        return new Response(JSON.stringify({ error: "Invalid token" }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initTileEventTables();
+        
+        // Check if user has joined this event
+        const progress = await env.EVENT_TRACK_DB.prepare(`
+          SELECT * FROM tile_event_progress WHERE event_id = ? AND discord_id = ?
+        `).bind(eventId, user.userId).first();
+        
+        if (!progress) {
+          return new Response(JSON.stringify({ error: "You must join the event first" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Get tile info
+        const tile = await env.EVENT_TRACK_DB.prepare(`
+          SELECT * FROM tile_event_tiles WHERE id = ? AND event_id = ?
+        `).bind(tileId, eventId).first();
+        
+        if (!tile) {
+          return new Response(JSON.stringify({ error: "Tile not found" }), {
+            status: 404,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Check if user already has this tile unlocked
+        const unlockedTiles = JSON.parse(progress.tiles_unlocked || '[]');
+        if (unlockedTiles.includes(tile.position)) {
+          return new Response(JSON.stringify({ error: "You've already completed this tile" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Check if this is the next tile to unlock
+        const canUnlock = tile.position === 0 || unlockedTiles.includes(tile.position - 1);
+        if (!canUnlock) {
+          return new Response(JSON.stringify({ error: "You must complete the previous tile first" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Check for pending submission
+        const pendingSubmission = await env.EVENT_TRACK_DB.prepare(`
+          SELECT * FROM tile_submissions 
+          WHERE event_id = ? AND tile_id = ? AND discord_id = ? AND status = 'pending'
+        `).bind(eventId, tileId, user.userId).first();
+        
+        if (pendingSubmission) {
+          return new Response(JSON.stringify({ error: "You already have a pending submission for this tile" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Parse multipart form data for image upload
+        const contentType = request.headers.get("Content-Type") || "";
+        if (!contentType.includes("multipart/form-data")) {
+          return new Response(JSON.stringify({ error: "Must upload as multipart/form-data" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        const formData = await request.formData();
+        const imageFile = formData.get("image");
+        
+        if (!imageFile || !(imageFile instanceof File)) {
+          return new Response(JSON.stringify({ error: "No image file uploaded" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Validate file type
+        const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+        if (!allowedTypes.includes(imageFile.type)) {
+          return new Response(JSON.stringify({ error: "Invalid file type. Allowed: JPEG, PNG, WebP, GIF" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Limit file size (5MB)
+        if (imageFile.size > 5 * 1024 * 1024) {
+          return new Response(JSON.stringify({ error: "File too large. Max 5MB" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Generate unique key for R2 storage
+        const ext = imageFile.name.split('.').pop() || 'png';
+        const imageKey = `submissions/${eventId}/${user.userId}/${tileId}_${Date.now()}.${ext}`;
+        
+        // Upload to R2
+        const imageBuffer = await imageFile.arrayBuffer();
+        await env.SUBMISSIONS_BUCKET.put(imageKey, imageBuffer, {
+          httpMetadata: { contentType: imageFile.type }
+        });
+        
+        // Generate public URL (or use R2 public bucket URL)
+        const imageUrl = `https://submissions.emuy.gg/${imageKey}`;
+        
+        // Run OCR if AI binding is available
+        let ocrText = null;
+        let aiConfidence = null;
+        let aiResult = null;
+        let autoApproved = false;
+        
+        if (env.AI) {
+          try {
+            // Use Cloudflare Workers AI for OCR
+            const ocrResponse = await env.AI.run("@cf/microsoft/resnet-50", {
+              image: [...new Uint8Array(imageBuffer)]
+            });
+            
+            // For now, we'll use a simple approach - future enhancement with proper OCR model
+            // Try to use llava for image understanding if available
+            try {
+              const visionResponse = await env.AI.run("@cf/llava-hf/llava-1.5-7b-hf", {
+                prompt: `Look at this OSRS (Old School RuneScape) screenshot. What items or drops do you see? List any notable items, especially rare drops.`,
+                image: [...new Uint8Array(imageBuffer)]
+              });
+              
+              if (visionResponse && visionResponse.response) {
+                ocrText = visionResponse.response;
+                
+                // Check if OCR text matches tile unlock keywords
+                if (tile.unlock_keywords) {
+                  const keywords = tile.unlock_keywords.toLowerCase().split(',').map(k => k.trim());
+                  const foundKeywords = keywords.filter(keyword => 
+                    ocrText.toLowerCase().includes(keyword)
+                  );
+                  
+                  aiConfidence = foundKeywords.length / keywords.length;
+                  aiResult = foundKeywords.length > 0 ? 'match' : 'no_match';
+                  
+                  // Auto-approve if high confidence
+                  if (aiConfidence >= 0.8) {
+                    autoApproved = true;
+                  }
+                }
+              }
+            } catch (visionErr) {
+              console.log("Vision AI not available:", visionErr.message);
+            }
+          } catch (aiErr) {
+            console.log("AI OCR failed:", aiErr.message);
+            // Continue without AI - submission goes to manual review
+          }
+        }
+        
+        // Create submission record
+        const status = autoApproved ? 'approved' : 'pending';
+        await env.EVENT_TRACK_DB.prepare(`
+          INSERT INTO tile_submissions (
+            event_id, tile_id, discord_id, discord_username, 
+            image_key, image_url, status, ocr_text, ai_confidence, ai_result
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+          eventId, tileId, user.userId, user.username,
+          imageKey, imageUrl, status, ocrText, aiConfidence, aiResult
+        ).run();
+        
+        // If auto-approved, unlock the tile for the user
+        if (autoApproved) {
+          unlockedTiles.push(tile.position);
+          const newCurrentTile = Math.max(...unlockedTiles, 0);
+          
+          // Check if completed
+          const totalTiles = await env.EVENT_TRACK_DB.prepare(`
+            SELECT COUNT(*) as count FROM tile_event_tiles WHERE event_id = ?
+          `).bind(eventId).first();
+          
+          const completedAt = unlockedTiles.length >= (totalTiles?.count || 0) 
+            ? new Date().toISOString() 
+            : null;
+          
+          await env.EVENT_TRACK_DB.prepare(`
+            UPDATE tile_event_progress 
+            SET tiles_unlocked = ?, current_tile = ?, completed_at = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE event_id = ? AND discord_id = ?
+          `).bind(JSON.stringify(unlockedTiles), newCurrentTile, completedAt, eventId, user.userId).run();
+        }
+        
+        return new Response(JSON.stringify({ 
+          success: true,
+          submission_id: (await env.EVENT_TRACK_DB.prepare(`SELECT last_insert_rowid() as id`).first())?.id,
+          status: status,
+          auto_approved: autoApproved,
+          ai_confidence: aiConfidence,
+          message: autoApproved 
+            ? "Submission approved! Tile unlocked." 
+            : "Submission received. Awaiting admin review."
+        }), {
+          status: 201,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+        
+      } catch (err) {
+        console.error("Error submitting proof:", err);
+        await logError({
+          endpoint: url.pathname,
+          method,
+          errorType: 'submission',
+          errorMessage: err.message,
+          stackTrace: err.stack,
+          userId: user?.userId,
+          ipAddress: request.headers.get('CF-Connecting-IP')
+        });
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+    
+    // --- GET /tile-events/:eventId/submissions - Get user's submissions for an event ---
+    if (method === "GET" && url.pathname.match(/^\/tile-events\/\d+\/submissions$/)) {
+      const eventId = parseInt(url.pathname.split('/')[2]);
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
+      
+      if (!token) {
+        return new Response(JSON.stringify({ error: "Authentication required" }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      const user = await verifyToken(token);
+      if (!user) {
+        return new Response(JSON.stringify({ error: "Invalid token" }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initTileEventTables();
+        
+        const submissions = await env.EVENT_TRACK_DB.prepare(`
+          SELECT ts.*, t.title as tile_title, t.position as tile_position
+          FROM tile_submissions ts
+          JOIN tile_event_tiles t ON ts.tile_id = t.id
+          WHERE ts.event_id = ? AND ts.discord_id = ?
+          ORDER BY ts.created_at DESC
+        `).bind(eventId, user.userId).all();
+        
+        return new Response(JSON.stringify({ submissions: submissions.results || [] }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error fetching submissions:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+    
+    // --- Admin: GET /admin/tile-events/:eventId/submissions - Get all submissions for review ---
+    if (method === "GET" && url.pathname.match(/^\/admin\/tile-events\/\d+\/submissions$/)) {
+      const eventId = parseInt(url.pathname.split('/')[3]);
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !(await hasAccess(user.userId, 'events'))) {
+        return new Response(JSON.stringify({ error: "Events admin access required" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initTileEventTables();
+        
+        // Get query params for filtering
+        const status = url.searchParams.get('status') || '';
+        const limit = parseInt(url.searchParams.get('limit') || '50');
+        const offset = parseInt(url.searchParams.get('offset') || '0');
+        
+        let query = `
+          SELECT ts.*, t.title as tile_title, t.position as tile_position,
+                 au.global_name, au.avatar
+          FROM tile_submissions ts
+          JOIN tile_event_tiles t ON ts.tile_id = t.id
+          LEFT JOIN admin_users au ON ts.discord_id = au.discord_id
+          WHERE ts.event_id = ?
+        `;
+        const bindings = [eventId];
+        
+        if (status) {
+          query += ` AND ts.status = ?`;
+          bindings.push(status);
+        }
+        
+        query += ` ORDER BY ts.created_at DESC LIMIT ? OFFSET ?`;
+        bindings.push(limit, offset);
+        
+        const submissions = await env.EVENT_TRACK_DB.prepare(query).bind(...bindings).all();
+        
+        // Get counts
+        const counts = await env.EVENT_TRACK_DB.prepare(`
+          SELECT 
+            COUNT(*) as total,
+            SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
+            SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) as approved,
+            SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) as rejected
+          FROM tile_submissions WHERE event_id = ?
+        `).bind(eventId).first();
+        
+        return new Response(JSON.stringify({ 
+          submissions: submissions.results || [],
+          counts
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error fetching admin submissions:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+    
+    // --- Admin: PUT /admin/tile-events/submissions/:submissionId - Review a submission ---
+    if (method === "PUT" && url.pathname.match(/^\/admin\/tile-events\/submissions\/\d+$/)) {
+      const submissionId = parseInt(url.pathname.split('/')[4]);
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
+      const adminUser = token ? await verifyToken(token) : null;
+      
+      if (!adminUser || !(await hasAccess(adminUser.userId, 'events'))) {
+        return new Response(JSON.stringify({ error: "Events admin access required" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initTileEventTables();
+        
+        const body = await request.json();
+        const { status, notes } = body; // status: 'approved' | 'rejected'
+        
+        if (!['approved', 'rejected'].includes(status)) {
+          return new Response(JSON.stringify({ error: "Status must be 'approved' or 'rejected'" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Get submission details
+        const submission = await env.EVENT_TRACK_DB.prepare(`
+          SELECT ts.*, t.position as tile_position
+          FROM tile_submissions ts
+          JOIN tile_event_tiles t ON ts.tile_id = t.id
+          WHERE ts.id = ?
+        `).bind(submissionId).first();
+        
+        if (!submission) {
+          return new Response(JSON.stringify({ error: "Submission not found" }), {
+            status: 404,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Update submission status
+        await env.EVENT_TRACK_DB.prepare(`
+          UPDATE tile_submissions 
+          SET status = ?, admin_notes = ?, reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `).bind(status, notes || null, adminUser.userId, submissionId).run();
+        
+        // If approved, unlock the tile for the user
+        if (status === 'approved') {
+          const progress = await env.EVENT_TRACK_DB.prepare(`
+            SELECT * FROM tile_event_progress WHERE event_id = ? AND discord_id = ?
+          `).bind(submission.event_id, submission.discord_id).first();
+          
+          if (progress) {
+            const unlockedTiles = JSON.parse(progress.tiles_unlocked || '[]');
+            
+            if (!unlockedTiles.includes(submission.tile_position)) {
+              unlockedTiles.push(submission.tile_position);
+              const newCurrentTile = Math.max(...unlockedTiles, 0);
+              
+              // Check if completed
+              const totalTiles = await env.EVENT_TRACK_DB.prepare(`
+                SELECT COUNT(*) as count FROM tile_event_tiles WHERE event_id = ?
+              `).bind(submission.event_id).first();
+              
+              const completedAt = unlockedTiles.length >= (totalTiles?.count || 0) 
+                ? new Date().toISOString() 
+                : null;
+              
+              await env.EVENT_TRACK_DB.prepare(`
+                UPDATE tile_event_progress 
+                SET tiles_unlocked = ?, current_tile = ?, completed_at = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE event_id = ? AND discord_id = ?
+              `).bind(JSON.stringify(unlockedTiles), newCurrentTile, completedAt, submission.event_id, submission.discord_id).run();
+            }
+          }
+        }
+        
+        return new Response(JSON.stringify({ 
+          success: true,
+          message: `Submission ${status}`
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error reviewing submission:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+    
+    // --- Admin: DELETE /admin/tile-events/submissions/:submissionId - Delete a submission ---
+    if (method === "DELETE" && url.pathname.match(/^\/admin\/tile-events\/submissions\/\d+$/)) {
+      const submissionId = parseInt(url.pathname.split('/')[4]);
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
+      const adminUser = token ? await verifyToken(token) : null;
+      
+      if (!adminUser || !(await hasAccess(adminUser.userId, 'events'))) {
+        return new Response(JSON.stringify({ error: "Events admin access required" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initTileEventTables();
+        
+        // Get submission to delete image from R2
+        const submission = await env.EVENT_TRACK_DB.prepare(`
+          SELECT * FROM tile_submissions WHERE id = ?
+        `).bind(submissionId).first();
+        
+        if (!submission) {
+          return new Response(JSON.stringify({ error: "Submission not found" }), {
+            status: 404,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Delete from R2
+        if (submission.image_key) {
+          try {
+            await env.SUBMISSIONS_BUCKET.delete(submission.image_key);
+          } catch (r2Err) {
+            console.log("Failed to delete R2 object:", r2Err.message);
+          }
+        }
+        
+        // Delete submission record
+        await env.EVENT_TRACK_DB.prepare(`DELETE FROM tile_submissions WHERE id = ?`).bind(submissionId).run();
+        
+        return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error deleting submission:", err);
         return new Response(JSON.stringify({ error: err.message }), {
           status: 500,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
