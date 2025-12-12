@@ -2288,13 +2288,17 @@ You don't have permission to view this content. Contact an administrator if you 
           });
         }
         
-        // Limit file size (5MB)
+        // Limit file size (5MB for storage)
         if (imageFile.size > 5 * 1024 * 1024) {
           return new Response(JSON.stringify({ error: "File too large. Max 5MB" }), {
             status: 400,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
         }
+        
+        // Check if image is small enough for AI processing (1MB limit for Workers AI)
+        const MAX_AI_IMAGE_SIZE = 1024 * 1024; // 1MB
+        const canRunAI = imageFile.size <= MAX_AI_IMAGE_SIZE;
         
         // Generate unique key for R2 storage
         const ext = imageFile.name.split('.').pop() || 'png';
@@ -2317,7 +2321,8 @@ You don't have permission to view this content. Contact an administrator if you 
         let aiResult = null;
         let autoApproved = false;
         
-        if (env.AI) {
+        // Only run AI if image is small enough
+        if (env.AI && canRunAI) {
           try {
             console.log("Running AI vision analysis...");
             
@@ -2373,6 +2378,9 @@ Be concise and focus on verifiable details.`;
             aiResult = `error: ${aiErr.message}`;
             // Continue without AI - submission goes to manual review
           }
+        } else if (!canRunAI) {
+          console.log(`Image too large for AI (${Math.round(imageFile.size / 1024)}KB), skipping auto-scan`);
+          aiResult = 'image_too_large';
         } else {
           console.log("AI binding not available, skipping auto-scan");
           aiResult = 'ai_unavailable';
@@ -3513,6 +3521,18 @@ Be concise and focus on verifiable details.`;
           });
         }
         
+        // Check file size - Workers AI limit is ~1MB for vision models
+        const MAX_AI_IMAGE_SIZE = 1024 * 1024; // 1MB
+        if (imageFile.size > MAX_AI_IMAGE_SIZE) {
+          return new Response(JSON.stringify({ 
+            error: `Image too large for AI (${(imageFile.size / 1024 / 1024).toFixed(2)}MB). Max: 1MB. Please resize or compress your image.`,
+            suggestion: "Try using a tool like https://squoosh.app to compress your image to under 1MB"
+          }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
         // Read image data
         const imageBuffer = await imageFile.arrayBuffer();
         
@@ -3527,8 +3547,10 @@ Be concise and focus on verifiable details.`;
           allKeywords = keywords.toLowerCase().split(',').map(k => k.trim()).filter(k => k);
         }
         
+        const imageSizeKB = Math.round(imageFile.size / 1024);
+        
         if (env.AI) {
-          console.log("Running AI debug scan...");
+          console.log(`Running AI debug scan on ${imageSizeKB}KB image...`);
           
           // Build dynamic prompt
           const keywordContext = allKeywords.length > 0 
@@ -3580,7 +3602,8 @@ Be thorough and focus on verifiable details.`;
           aiResult,
           aiConfidence,
           matchedKeywords,
-          allKeywords
+          allKeywords,
+          imageSizeKB
         }), {
           status: 200,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
