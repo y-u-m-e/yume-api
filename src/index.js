@@ -180,6 +180,9 @@ export default {
     
     // Helper to check if user has access to a feature (checks D1 first, then env fallback)
     const hasAccess = async (userId, feature) => {
+      // Super admins always have access
+      if (ADMIN_USER_IDS.includes(userId)) return true;
+      
       // Check D1 database first
       const perms = await getUserPermissions(userId);
       
