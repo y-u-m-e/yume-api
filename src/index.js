@@ -1564,6 +1564,584 @@ You don't have permission to view this content. Contact an administrator if you 
       }
     }
 
+    // ========================================
+    // TILE EVENT SYSTEM
+    // Snake-style tile progression game
+    // ========================================
+    
+    // Initialize tile event tables
+    const initTileEventTables = async () => {
+      // Main event configuration table
+      await env.EVENT_TRACK_DB.prepare(`
+        CREATE TABLE IF NOT EXISTS tile_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          description TEXT,
+          is_active INTEGER DEFAULT 1,
+          google_sheet_id TEXT,
+          google_sheet_tab TEXT,
+          created_by TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+      `).run();
+      
+      // Tiles within an event (the snake path)
+      await env.EVENT_TRACK_DB.prepare(`
+        CREATE TABLE IF NOT EXISTS tile_event_tiles (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          event_id INTEGER NOT NULL,
+          position INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          description TEXT,
+          image_url TEXT,
+          reward TEXT,
+          is_start INTEGER DEFAULT 0,
+          is_end INTEGER DEFAULT 0,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (event_id) REFERENCES tile_events(id) ON DELETE CASCADE
+        )
+      `).run();
+      
+      // User progress on tiles
+      await env.EVENT_TRACK_DB.prepare(`
+        CREATE TABLE IF NOT EXISTS tile_event_progress (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          event_id INTEGER NOT NULL,
+          discord_id TEXT NOT NULL,
+          discord_username TEXT,
+          current_tile INTEGER DEFAULT 0,
+          tiles_unlocked TEXT DEFAULT '[]',
+          completed_at TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (event_id) REFERENCES tile_events(id) ON DELETE CASCADE,
+          UNIQUE(event_id, discord_id)
+        )
+      `).run();
+    };
+
+    // --- GET /tile-events - List all tile events ---
+    if (method === "GET" && url.pathname === "/tile-events") {
+      try {
+        await initTileEventTables();
+        
+        const result = await env.EVENT_TRACK_DB.prepare(`
+          SELECT te.*, 
+                 (SELECT COUNT(*) FROM tile_event_tiles WHERE event_id = te.id) as tile_count,
+                 (SELECT COUNT(*) FROM tile_event_progress WHERE event_id = te.id) as participant_count
+          FROM tile_events te
+          ORDER BY te.is_active DESC, te.created_at DESC
+        `).all();
+        
+        return new Response(JSON.stringify({ events: result.results || [] }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error fetching tile events:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
+    // --- GET /tile-events/:id - Get a specific tile event with all tiles ---
+    if (method === "GET" && url.pathname.match(/^\/tile-events\/\d+$/)) {
+      const eventId = parseInt(url.pathname.split('/')[2]);
+      
+      try {
+        await initTileEventTables();
+        
+        // Get event details
+        const event = await env.EVENT_TRACK_DB.prepare(`
+          SELECT * FROM tile_events WHERE id = ?
+        `).bind(eventId).first();
+        
+        if (!event) {
+          return new Response(JSON.stringify({ error: "Event not found" }), {
+            status: 404,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Get all tiles for this event
+        const tiles = await env.EVENT_TRACK_DB.prepare(`
+          SELECT * FROM tile_event_tiles WHERE event_id = ? ORDER BY position ASC
+        `).bind(eventId).all();
+        
+        return new Response(JSON.stringify({ 
+          event, 
+          tiles: tiles.results || [] 
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error fetching tile event:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
+    // --- GET /tile-events/:id/progress - Get user's progress on an event ---
+    if (method === "GET" && url.pathname.match(/^\/tile-events\/\d+\/progress$/)) {
+      const eventId = parseInt(url.pathname.split('/')[2]);
+      const token = request.headers.get("Cookie")?.match(/token=([^;]+)/)?.[1];
+      
+      if (!token) {
+        return new Response(JSON.stringify({ error: "Authentication required" }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      const user = await verifyToken(token);
+      if (!user) {
+        return new Response(JSON.stringify({ error: "Invalid token" }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initTileEventTables();
+        
+        // Get or create progress for this user
+        let progress = await env.EVENT_TRACK_DB.prepare(`
+          SELECT * FROM tile_event_progress WHERE event_id = ? AND discord_id = ?
+        `).bind(eventId, user.userId).first();
+        
+        if (!progress) {
+          // Create initial progress
+          await env.EVENT_TRACK_DB.prepare(`
+            INSERT INTO tile_event_progress (event_id, discord_id, discord_username, current_tile, tiles_unlocked)
+            VALUES (?, ?, ?, 0, '[]')
+          `).bind(eventId, user.userId, user.username).run();
+          
+          progress = await env.EVENT_TRACK_DB.prepare(`
+            SELECT * FROM tile_event_progress WHERE event_id = ? AND discord_id = ?
+          `).bind(eventId, user.userId).first();
+        }
+        
+        // Parse tiles_unlocked JSON
+        progress.tiles_unlocked = JSON.parse(progress.tiles_unlocked || '[]');
+        
+        return new Response(JSON.stringify({ progress }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error fetching progress:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
+    // --- Admin: POST /admin/tile-events - Create a new tile event ---
+    if (method === "POST" && url.pathname === "/admin/tile-events") {
+      const token = request.headers.get("Cookie")?.match(/token=([^;]+)/)?.[1];
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !await hasAccess(user.userId, 'admin')) {
+        return new Response(JSON.stringify({ error: "Admin access required" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initTileEventTables();
+        const body = await request.json();
+        
+        const name = sanitizeString(body.name || '', 200);
+        const description = sanitizeString(body.description || '', 1000);
+        const googleSheetId = sanitizeString(body.google_sheet_id || '', 100);
+        const googleSheetTab = sanitizeString(body.google_sheet_tab || '', 100);
+        
+        if (!name) {
+          return new Response(JSON.stringify({ error: "Name is required" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        const result = await env.EVENT_TRACK_DB.prepare(`
+          INSERT INTO tile_events (name, description, google_sheet_id, google_sheet_tab, created_by)
+          VALUES (?, ?, ?, ?, ?)
+        `).bind(name, description, googleSheetId, googleSheetTab, user.userId).run();
+        
+        return new Response(JSON.stringify({ 
+          success: true, 
+          eventId: result.meta.last_row_id 
+        }), {
+          status: 201,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error creating tile event:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
+    // --- Admin: PUT /admin/tile-events/:id - Update a tile event ---
+    if (method === "PUT" && url.pathname.match(/^\/admin\/tile-events\/\d+$/)) {
+      const eventId = parseInt(url.pathname.split('/')[3]);
+      const token = request.headers.get("Cookie")?.match(/token=([^;]+)/)?.[1];
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !await hasAccess(user.userId, 'admin')) {
+        return new Response(JSON.stringify({ error: "Admin access required" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initTileEventTables();
+        const body = await request.json();
+        
+        const name = sanitizeString(body.name || '', 200);
+        const description = sanitizeString(body.description || '', 1000);
+        const isActive = body.is_active ? 1 : 0;
+        const googleSheetId = sanitizeString(body.google_sheet_id || '', 100);
+        const googleSheetTab = sanitizeString(body.google_sheet_tab || '', 100);
+        
+        await env.EVENT_TRACK_DB.prepare(`
+          UPDATE tile_events 
+          SET name = ?, description = ?, is_active = ?, google_sheet_id = ?, google_sheet_tab = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `).bind(name, description, isActive, googleSheetId, googleSheetTab, eventId).run();
+        
+        return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error updating tile event:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
+    // --- Admin: DELETE /admin/tile-events/:id - Delete a tile event ---
+    if (method === "DELETE" && url.pathname.match(/^\/admin\/tile-events\/\d+$/)) {
+      const eventId = parseInt(url.pathname.split('/')[3]);
+      const token = request.headers.get("Cookie")?.match(/token=([^;]+)/)?.[1];
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !await hasAccess(user.userId, 'admin')) {
+        return new Response(JSON.stringify({ error: "Admin access required" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initTileEventTables();
+        
+        // Delete progress first
+        await env.EVENT_TRACK_DB.prepare(`DELETE FROM tile_event_progress WHERE event_id = ?`).bind(eventId).run();
+        // Delete tiles
+        await env.EVENT_TRACK_DB.prepare(`DELETE FROM tile_event_tiles WHERE event_id = ?`).bind(eventId).run();
+        // Delete event
+        await env.EVENT_TRACK_DB.prepare(`DELETE FROM tile_events WHERE id = ?`).bind(eventId).run();
+        
+        return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error deleting tile event:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
+    // --- Admin: POST /admin/tile-events/:id/tiles - Add tiles to an event ---
+    if (method === "POST" && url.pathname.match(/^\/admin\/tile-events\/\d+\/tiles$/)) {
+      const eventId = parseInt(url.pathname.split('/')[3]);
+      const token = request.headers.get("Cookie")?.match(/token=([^;]+)/)?.[1];
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !await hasAccess(user.userId, 'admin')) {
+        return new Response(JSON.stringify({ error: "Admin access required" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initTileEventTables();
+        const body = await request.json();
+        
+        // Body can be a single tile or array of tiles
+        const tiles = Array.isArray(body) ? body : [body];
+        
+        for (const tile of tiles) {
+          const position = parseInt(tile.position) || 0;
+          const title = sanitizeString(tile.title || '', 200);
+          const description = sanitizeString(tile.description || '', 500);
+          const imageUrl = sanitizeString(tile.image_url || '', 500);
+          const reward = sanitizeString(tile.reward || '', 200);
+          const isStart = tile.is_start ? 1 : 0;
+          const isEnd = tile.is_end ? 1 : 0;
+          
+          await env.EVENT_TRACK_DB.prepare(`
+            INSERT INTO tile_event_tiles (event_id, position, title, description, image_url, reward, is_start, is_end)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(eventId, position, title, description, imageUrl, reward, isStart, isEnd).run();
+        }
+        
+        return new Response(JSON.stringify({ success: true, count: tiles.length }), {
+          status: 201,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error adding tiles:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
+    // --- Admin: PUT /admin/tile-events/:id/tiles/bulk - Replace all tiles ---
+    if (method === "PUT" && url.pathname.match(/^\/admin\/tile-events\/\d+\/tiles\/bulk$/)) {
+      const eventId = parseInt(url.pathname.split('/')[3]);
+      const token = request.headers.get("Cookie")?.match(/token=([^;]+)/)?.[1];
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !await hasAccess(user.userId, 'admin')) {
+        return new Response(JSON.stringify({ error: "Admin access required" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initTileEventTables();
+        const body = await request.json();
+        const tiles = Array.isArray(body.tiles) ? body.tiles : [];
+        
+        // Delete existing tiles
+        await env.EVENT_TRACK_DB.prepare(`DELETE FROM tile_event_tiles WHERE event_id = ?`).bind(eventId).run();
+        
+        // Insert new tiles
+        for (let i = 0; i < tiles.length; i++) {
+          const tile = tiles[i];
+          const position = i;
+          const title = sanitizeString(tile.title || '', 200);
+          const description = sanitizeString(tile.description || '', 500);
+          const imageUrl = sanitizeString(tile.image_url || '', 500);
+          const reward = sanitizeString(tile.reward || '', 200);
+          const isStart = i === 0 ? 1 : 0;
+          const isEnd = i === tiles.length - 1 ? 1 : 0;
+          
+          await env.EVENT_TRACK_DB.prepare(`
+            INSERT INTO tile_event_tiles (event_id, position, title, description, image_url, reward, is_start, is_end)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(eventId, position, title, description, imageUrl, reward, isStart, isEnd).run();
+        }
+        
+        return new Response(JSON.stringify({ success: true, count: tiles.length }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error bulk updating tiles:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
+    // --- Admin: GET /admin/tile-events/:id/participants - Get all participants ---
+    if (method === "GET" && url.pathname.match(/^\/admin\/tile-events\/\d+\/participants$/)) {
+      const eventId = parseInt(url.pathname.split('/')[3]);
+      const token = request.headers.get("Cookie")?.match(/token=([^;]+)/)?.[1];
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !await hasAccess(user.userId, 'admin')) {
+        return new Response(JSON.stringify({ error: "Admin access required" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initTileEventTables();
+        
+        const participants = await env.EVENT_TRACK_DB.prepare(`
+          SELECT tep.*, au.username, au.global_name, au.avatar
+          FROM tile_event_progress tep
+          LEFT JOIN admin_users au ON tep.discord_id = au.discord_id
+          WHERE tep.event_id = ?
+          ORDER BY tep.current_tile DESC, tep.updated_at DESC
+        `).bind(eventId).all();
+        
+        // Parse tiles_unlocked for each participant
+        const parsed = (participants.results || []).map(p => ({
+          ...p,
+          tiles_unlocked: JSON.parse(p.tiles_unlocked || '[]')
+        }));
+        
+        return new Response(JSON.stringify({ participants: parsed }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error fetching participants:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
+    // --- Admin: POST /admin/tile-events/:id/unlock - Unlock tile(s) for a user ---
+    if (method === "POST" && url.pathname.match(/^\/admin\/tile-events\/\d+\/unlock$/)) {
+      const eventId = parseInt(url.pathname.split('/')[3]);
+      const token = request.headers.get("Cookie")?.match(/token=([^;]+)/)?.[1];
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !await hasAccess(user.userId, 'admin')) {
+        return new Response(JSON.stringify({ error: "Admin access required" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initTileEventTables();
+        const body = await request.json();
+        
+        const targetUserId = sanitizeString(body.discord_id || '', 30);
+        const tilePosition = parseInt(body.tile_position);
+        
+        if (!targetUserId || isNaN(tilePosition)) {
+          return new Response(JSON.stringify({ error: "discord_id and tile_position required" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Get current progress
+        let progress = await env.EVENT_TRACK_DB.prepare(`
+          SELECT * FROM tile_event_progress WHERE event_id = ? AND discord_id = ?
+        `).bind(eventId, targetUserId).first();
+        
+        if (!progress) {
+          // Create initial progress
+          await env.EVENT_TRACK_DB.prepare(`
+            INSERT INTO tile_event_progress (event_id, discord_id, discord_username, current_tile, tiles_unlocked)
+            VALUES (?, ?, ?, 0, '[]')
+          `).bind(eventId, targetUserId, body.username || 'Unknown').run();
+          
+          progress = { tiles_unlocked: '[]', current_tile: 0 };
+        }
+        
+        // Parse and update unlocked tiles
+        let unlockedTiles = JSON.parse(progress.tiles_unlocked || '[]');
+        if (!unlockedTiles.includes(tilePosition)) {
+          unlockedTiles.push(tilePosition);
+          unlockedTiles.sort((a, b) => a - b);
+        }
+        
+        // Update current_tile to the highest unlocked
+        const newCurrentTile = Math.max(...unlockedTiles, 0);
+        
+        // Check if event is completed (all tiles unlocked)
+        const totalTiles = await env.EVENT_TRACK_DB.prepare(`
+          SELECT COUNT(*) as count FROM tile_event_tiles WHERE event_id = ?
+        `).bind(eventId).first();
+        
+        const completedAt = unlockedTiles.length >= (totalTiles?.count || 0) 
+          ? new Date().toISOString() 
+          : null;
+        
+        await env.EVENT_TRACK_DB.prepare(`
+          UPDATE tile_event_progress 
+          SET tiles_unlocked = ?, current_tile = ?, completed_at = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE event_id = ? AND discord_id = ?
+        `).bind(JSON.stringify(unlockedTiles), newCurrentTile, completedAt, eventId, targetUserId).run();
+        
+        return new Response(JSON.stringify({ 
+          success: true, 
+          tiles_unlocked: unlockedTiles,
+          current_tile: newCurrentTile,
+          completed: !!completedAt
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error unlocking tile:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
+    // --- Admin: POST /admin/tile-events/:id/reset-user - Reset a user's progress ---
+    if (method === "POST" && url.pathname.match(/^\/admin\/tile-events\/\d+\/reset-user$/)) {
+      const eventId = parseInt(url.pathname.split('/')[3]);
+      const token = request.headers.get("Cookie")?.match(/token=([^;]+)/)?.[1];
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !await hasAccess(user.userId, 'admin')) {
+        return new Response(JSON.stringify({ error: "Admin access required" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initTileEventTables();
+        const body = await request.json();
+        
+        const targetUserId = sanitizeString(body.discord_id || '', 30);
+        
+        if (!targetUserId) {
+          return new Response(JSON.stringify({ error: "discord_id required" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        await env.EVENT_TRACK_DB.prepare(`
+          UPDATE tile_event_progress 
+          SET tiles_unlocked = '[]', current_tile = 0, completed_at = NULL, updated_at = CURRENT_TIMESTAMP
+          WHERE event_id = ? AND discord_id = ?
+        `).bind(eventId, targetUserId).run();
+        
+        return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error resetting user progress:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
     // --- Default Fallback ---
     return new Response("Not Found", {
       status: 404,
