@@ -64,6 +64,7 @@
 		// - CLOUDFLARE_API_TOKEN: Cloudflare API token for Pages deployments
 		// - JWT_SECRET: Secret key for signing auth tokens (min 32 chars recommended)
 		// - GITHUB_PAT: GitHub Personal Access Token for workflow triggers
+		// - OCR_SPACE_API_KEY: Free API key from https://ocr.space/ocrapi (25k requests/month free)
 		// Sesh Calendar Worker URL (for triggering syncs from DevOps panel)
 		"SESH_WORKER_URL": "https://sesh-calendar-worker.karlstraub7.workers.dev"
 	},

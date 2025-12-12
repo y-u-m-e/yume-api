@@ -2315,117 +2315,136 @@ You don't have permission to view this content. Contact an administrator if you 
         const apiOrigin = url.origin;
         const imageUrl = `${apiOrigin}/r2/${imageKey}`;
         
-        // Run AI Vision analysis if AI binding is available
+        // Run OCR to extract text from the image
         let ocrText = null;
         let aiConfidence = null;
         let aiResult = null;
         let autoApproved = false;
         
-        // Only run AI if image is small enough
-        if (env.AI && canRunAI) {
+        // Try OCR.space first (dedicated OCR service, more accurate)
+        // Fall back to LLaVA if OCR.space not configured
+        if (env.OCR_SPACE_API_KEY && canRunAI) {
           try {
-            console.log("Running AI OCR text extraction...");
+            console.log("Running OCR.space text extraction...");
             
-            // OCR-focused prompt: Extract ONLY visible text, no interpretation
-            // This reduces false positives from AI "understanding" vs actual text
-            const ocrPrompt = `You are an OCR text extractor. Your ONLY job is to read and output the exact text visible in this image.
-
-RULES:
-1. Output ONLY text that is clearly visible and readable in the image
-2. Do NOT describe the image or what you think is happening
-3. Do NOT add any interpretation or context
-4. Include chat messages, notifications, item names, player names, interface text
-5. Separate different text elements with newlines
-6. If you cannot read text clearly, skip it
-7. Output "NO_TEXT_FOUND" if no readable text is visible
-
-OUTPUT FORMAT:
-Just the raw text, one element per line. Nothing else.`;
+            // Convert image to base64 for OCR.space API
+            const base64Image = btoa(String.fromCharCode(...new Uint8Array(imageBuffer)));
+            
+            const ocrFormData = new FormData();
+            ocrFormData.append('base64Image', `data:${imageFile.type};base64,${base64Image}`);
+            ocrFormData.append('language', 'eng');
+            ocrFormData.append('isOverlayRequired', 'false');
+            ocrFormData.append('detectOrientation', 'true');
+            ocrFormData.append('scale', 'true');
+            ocrFormData.append('OCREngine', '2'); // Engine 2 is better for screenshots
+            
+            const ocrResponse = await fetch('https://api.ocr.space/parse/image', {
+              method: 'POST',
+              headers: {
+                'apikey': env.OCR_SPACE_API_KEY
+              },
+              body: ocrFormData
+            });
+            
+            const ocrData = await ocrResponse.json();
+            console.log("OCR.space response:", JSON.stringify(ocrData));
+            
+            if (ocrData.ParsedResults && ocrData.ParsedResults.length > 0) {
+              ocrText = ocrData.ParsedResults.map(r => r.ParsedText).join('\n');
+              aiResult = 'ocrspace_extracted';
+            } else if (ocrData.ErrorMessage) {
+              console.error("OCR.space error:", ocrData.ErrorMessage);
+              aiResult = `ocrspace_error: ${ocrData.ErrorMessage}`;
+            }
+          } catch (ocrErr) {
+            console.error("OCR.space failed:", ocrErr);
+            aiResult = `ocrspace_error: ${ocrErr.message}`;
+          }
+        }
+        // Fallback to LLaVA if OCR.space didn't work or not configured
+        else if (env.AI && canRunAI) {
+          try {
+            console.log("Running LLaVA OCR text extraction (fallback)...");
+            
+            const ocrPrompt = `Read all the text visible in this image. Output only the exact text you can see, one line at a time. Do not describe the image.`;
             
             const visionResponse = await env.AI.run("@cf/llava-hf/llava-1.5-7b-hf", {
               prompt: ocrPrompt,
               image: [...new Uint8Array(imageBuffer)]
             });
             
-            console.log("AI OCR response:", JSON.stringify(visionResponse));
+            console.log("LLaVA response:", JSON.stringify(visionResponse));
             
             if (visionResponse && (visionResponse.response || visionResponse.description)) {
               ocrText = visionResponse.response || visionResponse.description;
-              aiResult = 'ocr_extracted';
-              
-              // Check if extracted text contains required keywords
-              // Keywords can use special prefixes:
-              // - "exact:" for exact phrase match (case-insensitive)
-              // - "all:" to require ALL following keywords
-              // - Default: any keyword match
-              if (tile.unlock_keywords && ocrText && ocrText !== 'NO_TEXT_FOUND') {
-                const ocrLower = ocrText.toLowerCase();
-                const rawKeywords = tile.unlock_keywords.split(',').map(k => k.trim()).filter(k => k);
-                
-                // Parse keyword modifiers
-                let requireAll = false;
-                const keywords = [];
-                const exactPhrases = [];
-                
-                for (const kw of rawKeywords) {
-                  const kwLower = kw.toLowerCase();
-                  if (kwLower.startsWith('all:')) {
-                    requireAll = true;
-                  } else if (kwLower.startsWith('exact:')) {
-                    exactPhrases.push(kwLower.replace('exact:', '').trim());
-                  } else {
-                    keywords.push(kwLower);
-                  }
-                }
-                
-                // Check exact phrase matches
-                const exactMatches = exactPhrases.filter(phrase => ocrLower.includes(phrase));
-                
-                // Check keyword matches (must be whole words, not partial)
-                const keywordMatches = keywords.filter(keyword => {
-                  // Use word boundary matching to avoid partial matches
-                  // e.g. "pet" should not match "carpet" or "compete"
-                  const regex = new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-                  return regex.test(ocrText);
-                });
-                
-                const allMatches = [...exactMatches, ...keywordMatches];
-                const totalKeywords = exactPhrases.length + keywords.length;
-                
-                // Calculate confidence
-                aiConfidence = totalKeywords > 0 ? allMatches.length / totalKeywords : 0;
-                aiResult = allMatches.length > 0 
-                  ? `match: ${allMatches.join(', ')}` 
-                  : 'no_match';
-                
-                console.log(`OCR keyword matching: ${allMatches.length}/${totalKeywords} (requireAll: ${requireAll})`);
-                console.log(`Matched: [${allMatches.join(', ')}]`);
-                
-                // Auto-approve logic:
-                // - If "all:" prefix used, ALL keywords must match
-                // - Otherwise, at least one match required
-                if (requireAll) {
-                  autoApproved = allMatches.length === totalKeywords;
-                } else {
-                  autoApproved = allMatches.length > 0;
-                }
-                
-                if (autoApproved) {
-                  console.log("Auto-approving based on OCR text match");
-                }
-              }
+              aiResult = 'llava_extracted';
             }
           } catch (aiErr) {
-            console.error("AI OCR failed:", aiErr.message, aiErr.stack);
-            aiResult = `error: ${aiErr.message}`;
-            // Continue without AI - submission goes to manual review
+            console.error("LLaVA failed:", aiErr);
+            aiResult = `llava_error: ${aiErr.message}`;
+          }
+        }
+        
+        // Process extracted text for keyword matching
+        if (ocrText && tile.unlock_keywords) {
+          const ocrLower = ocrText.toLowerCase();
+          const rawKeywords = tile.unlock_keywords.split(',').map(k => k.trim()).filter(k => k);
+          
+          // Parse keyword modifiers
+          let requireAll = false;
+          const keywords = [];
+          const exactPhrases = [];
+          
+          for (const kw of rawKeywords) {
+            const kwLower = kw.toLowerCase();
+            if (kwLower.startsWith('all:')) {
+              requireAll = true;
+            } else if (kwLower.startsWith('exact:')) {
+              exactPhrases.push(kwLower.replace('exact:', '').trim());
+            } else {
+              keywords.push(kwLower);
+            }
+          }
+          
+          // Check exact phrase matches
+          const exactMatches = exactPhrases.filter(phrase => ocrLower.includes(phrase));
+          
+          // Check keyword matches (must be whole words, not partial)
+          const keywordMatches = keywords.filter(keyword => {
+            const regex = new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+            return regex.test(ocrText);
+          });
+          
+          const allMatches = [...exactMatches, ...keywordMatches];
+          const totalKeywords = exactPhrases.length + keywords.length;
+          
+          // Calculate confidence
+          aiConfidence = totalKeywords > 0 ? allMatches.length / totalKeywords : 0;
+          aiResult = allMatches.length > 0 
+            ? `match: ${allMatches.join(', ')}` 
+            : 'no_match';
+          
+          console.log(`OCR keyword matching: ${allMatches.length}/${totalKeywords} (requireAll: ${requireAll})`);
+          console.log(`Matched: [${allMatches.join(', ')}]`);
+          
+          // Auto-approve logic:
+          // - If "all:" prefix used, ALL keywords must match
+          // - Otherwise, at least one match required
+          if (requireAll) {
+            autoApproved = allMatches.length === totalKeywords;
+          } else {
+            autoApproved = allMatches.length > 0;
+          }
+          
+          if (autoApproved) {
+            console.log("Auto-approving based on OCR text match");
           }
         } else if (!canRunAI) {
-          console.log(`Image too large for AI (${Math.round(imageFile.size / 1024)}KB), skipping auto-scan`);
+          console.log(`Image too large for OCR (${Math.round(imageFile.size / 1024)}KB), skipping auto-scan`);
           aiResult = 'image_too_large';
-        } else {
-          console.log("AI binding not available, skipping auto-scan");
-          aiResult = 'ai_unavailable';
+        } else if (!env.OCR_SPACE_API_KEY && !env.AI) {
+          console.log("No OCR service available, skipping auto-scan");
+          aiResult = 'ocr_unavailable';
         }
         
         // Create submission record
@@ -3610,49 +3629,74 @@ Just the raw text, one element per line. Nothing else.`;
         }
         
         const imageSizeKB = Math.round(imageFile.size / 1024);
+        let serviceUsed = promptStyle;
         
-        // Define different prompt styles to test
-        const prompts = {
-          // Style 1: Strict OCR mode
-          ocr: `You are an OCR text extractor. Your ONLY job is to read and output the exact text visible in this image.
-
-RULES:
-1. Output ONLY text that is clearly visible and readable in the image
-2. Do NOT describe the image or what you think is happening
-3. Do NOT add any interpretation or context
-4. Include chat messages, notifications, item names, player names, interface text
-5. Separate different text elements with newlines
-6. If you cannot read text clearly, skip it
-7. Output "NO_TEXT_FOUND" if no readable text is visible
-
-OUTPUT FORMAT:
-Just the raw text, one element per line. Nothing else.`,
+        // OCR.space - Dedicated OCR service (recommended)
+        if (promptStyle === 'ocrspace') {
+          if (!env.OCR_SPACE_API_KEY) {
+            return new Response(JSON.stringify({ 
+              error: "OCR.space API key not configured",
+              suggestion: "Set OCR_SPACE_API_KEY secret: npx wrangler secret put OCR_SPACE_API_KEY"
+            }), {
+              status: 500,
+              headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+          }
           
-          // Style 2: Simple and direct
-          simple: `Read all the text in this image. Output only the exact words and text you can see. Do not describe the image. Just list the text.`,
+          console.log(`Running OCR.space scan on ${imageSizeKB}KB image...`);
           
-          // Style 3: Game-focused
-          game: `This is a screenshot from Old School RuneScape. Read and list ALL text visible in the image including:
-- Chat messages
-- Drop notifications (like "Valuable drop:")  
-- Player names
-- Item names
-- Interface text
-- Any other visible text
-
-Output ONLY the text you can read, nothing else.`,
+          try {
+            // Convert image to base64 for OCR.space API
+            const base64Image = btoa(String.fromCharCode(...new Uint8Array(imageBuffer)));
+            
+            const ocrFormData = new FormData();
+            ocrFormData.append('base64Image', `data:${imageFile.type};base64,${base64Image}`);
+            ocrFormData.append('language', 'eng');
+            ocrFormData.append('isOverlayRequired', 'false');
+            ocrFormData.append('detectOrientation', 'true');
+            ocrFormData.append('scale', 'true');
+            ocrFormData.append('OCREngine', '2'); // Engine 2 is better for screenshots
+            
+            const ocrResponse = await fetch('https://api.ocr.space/parse/image', {
+              method: 'POST',
+              headers: {
+                'apikey': env.OCR_SPACE_API_KEY
+              },
+              body: ocrFormData
+            });
+            
+            const ocrData = await ocrResponse.json();
+            rawResponse = ocrData;
+            console.log("OCR.space response:", JSON.stringify(ocrData));
+            
+            if (ocrData.ParsedResults && ocrData.ParsedResults.length > 0) {
+              ocrText = ocrData.ParsedResults.map(r => r.ParsedText).join('\n');
+              aiResult = 'ocr_extracted';
+              promptUsed = 'OCR.space Engine 2 (dedicated OCR service)';
+            } else if (ocrData.ErrorMessage) {
+              aiResult = `error: ${ocrData.ErrorMessage}`;
+            } else {
+              aiResult = 'no_text_found';
+            }
+          } catch (ocrErr) {
+            console.error("OCR.space failed:", ocrErr);
+            aiResult = `error: ${ocrErr.message}`;
+            rawResponse = { error: ocrErr.message };
+          }
+        }
+        // LLaVA vision model (Cloudflare AI) - various prompt styles
+        else if (env.AI) {
+          // Define different prompt styles for LLaVA
+          const prompts = {
+            ocr: `You are an OCR text extractor. Read and output ALL text visible in this image. Output only the exact text, one line at a time.`,
+            simple: `Read all the text in this image. Output only the exact words and text you can see. Do not describe the image. Just list the text.`,
+            game: `This is a screenshot from Old School RuneScape. Read and list ALL text visible in the image including chat messages, drop notifications, player names, item names, and interface text. Output ONLY the text you can read.`,
+            describe: `Describe everything you see in this image in detail. Include any text, objects, colors, and activities visible.`,
+            minimal: `What text is in this image?`
+          };
           
-          // Style 4: Describe everything (for comparison)
-          describe: `Describe everything you see in this image in detail. Include any text, objects, colors, and activities visible.`,
-          
-          // Style 5: Very minimal
-          minimal: `What text is in this image?`
-        };
-        
-        promptUsed = prompts[promptStyle] || prompts.ocr;
-        
-        if (env.AI) {
-          console.log(`Running AI debug scan (style: ${promptStyle}) on ${imageSizeKB}KB image...`);
+          promptUsed = prompts[promptStyle] || prompts.game;
+          console.log(`Running LLaVA scan (style: ${promptStyle}) on ${imageSizeKB}KB image...`);
           
           try {
             const visionResponse = await env.AI.run("@cf/llava-hf/llava-1.5-7b-hf", {
@@ -3660,42 +3704,43 @@ Output ONLY the text you can read, nothing else.`,
               image: [...new Uint8Array(imageBuffer)]
             });
             
-            // Store raw response for debugging
             rawResponse = visionResponse;
-            console.log("AI raw response:", JSON.stringify(visionResponse));
+            console.log("LLaVA response:", JSON.stringify(visionResponse));
             
             if (visionResponse && (visionResponse.response || visionResponse.description)) {
               ocrText = visionResponse.response || visionResponse.description;
-              aiResult = 'extracted';
-              
-              // Check keyword matches with word boundaries
-              if ((exactPhrases.length > 0 || regularKeywords.length > 0) && ocrText && ocrText !== 'NO_TEXT_FOUND') {
-                const ocrLower = ocrText.toLowerCase();
-                
-                // Check exact phrase matches
-                const exactMatches = exactPhrases.filter(phrase => ocrLower.includes(phrase));
-                
-                // Check keyword matches with word boundaries (avoid partial matches like "pet" in "carpet")
-                const keywordMatches = regularKeywords.filter(keyword => {
-                  const regex = new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-                  return regex.test(ocrText);
-                });
-                
-                matchedKeywords = [...exactMatches.map(p => `exact:${p}`), ...keywordMatches];
-                const totalKeywords = exactPhrases.length + regularKeywords.length;
-                aiConfidence = totalKeywords > 0 ? matchedKeywords.length / totalKeywords : 0;
-                aiResult = matchedKeywords.length > 0 ? `match: ${matchedKeywords.join(', ')}` : 'no_match';
-              }
+              aiResult = 'llava_extracted';
             } else {
               aiResult = 'no_response';
             }
           } catch (aiErr) {
-            console.error("AI failed:", aiErr);
+            console.error("LLaVA failed:", aiErr);
             aiResult = `error: ${aiErr.message}`;
             rawResponse = { error: aiErr.message, stack: aiErr.stack };
           }
         } else {
           aiResult = 'ai_unavailable';
+        }
+        
+        // Keyword matching (same for all services)
+        if ((exactPhrases.length > 0 || regularKeywords.length > 0) && ocrText) {
+          const ocrLower = ocrText.toLowerCase();
+          
+          // Check exact phrase matches
+          const exactMatches = exactPhrases.filter(phrase => ocrLower.includes(phrase));
+          
+          // Check keyword matches with word boundaries
+          const keywordMatches = regularKeywords.filter(keyword => {
+            const regex = new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+            return regex.test(ocrText);
+          });
+          
+          matchedKeywords = [...exactMatches.map(p => `exact:${p}`), ...keywordMatches];
+          const totalKeywords = exactPhrases.length + regularKeywords.length;
+          aiConfidence = totalKeywords > 0 ? matchedKeywords.length / totalKeywords : 0;
+          if (matchedKeywords.length > 0) {
+            aiResult = `match: ${matchedKeywords.join(', ')}`;
+          }
         }
         
         return new Response(JSON.stringify({
@@ -3712,10 +3757,11 @@ Output ONLY the text you can read, nothing else.`,
             : matchedKeywords.length > 0,
           // Debug info
           debug: {
-            promptStyle,
-            promptUsed: promptUsed.substring(0, 200) + '...',
+            service: promptStyle === 'ocrspace' ? 'OCR.space' : 'Cloudflare LLaVA',
+            promptStyle: serviceUsed,
+            promptUsed: promptUsed.length > 200 ? promptUsed.substring(0, 200) + '...' : promptUsed,
             rawResponse,
-            model: '@cf/llava-hf/llava-1.5-7b-hf'
+            model: promptStyle === 'ocrspace' ? 'OCR.space Engine 2' : '@cf/llava-hf/llava-1.5-7b-hf'
           }
         }), {
           status: 200,
