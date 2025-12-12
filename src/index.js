@@ -181,6 +181,80 @@ export default {
     const { method } = request;
     const url = new URL(request.url);
 
+    // ==========================================================================
+    // ERROR LOGGING SYSTEM
+    // ==========================================================================
+    // Captures and stores errors in D1 for debugging and monitoring
+    
+    /**
+     * Initialize the error_logs table if it doesn't exist
+     */
+    const initErrorLogTable = async () => {
+      try {
+        await env.EVENT_TRACK_DB.prepare(`
+          CREATE TABLE IF NOT EXISTS error_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+            endpoint TEXT,
+            method TEXT,
+            error_type TEXT,
+            error_message TEXT,
+            stack_trace TEXT,
+            user_id TEXT,
+            request_body TEXT,
+            ip_address TEXT,
+            user_agent TEXT,
+            resolved INTEGER DEFAULT 0,
+            notes TEXT
+          )
+        `).run();
+      } catch (e) {
+        console.error("Failed to init error_logs table:", e);
+      }
+    };
+
+    /**
+     * Log an error to the database
+     * @param {Object} errorData - Error details to log
+     * @param {string} errorData.endpoint - API endpoint that failed
+     * @param {string} errorData.method - HTTP method
+     * @param {string} errorData.errorType - Category of error (db, auth, validation, etc.)
+     * @param {string} errorData.errorMessage - Error message
+     * @param {string} errorData.stackTrace - Error stack trace (optional)
+     * @param {string} errorData.userId - User ID if authenticated (optional)
+     * @param {string} errorData.requestBody - Request body (optional, sanitized)
+     */
+    const logError = async (errorData) => {
+      try {
+        await initErrorLogTable();
+        
+        const clientIP = request.headers.get("CF-Connecting-IP") || "unknown";
+        const userAgent = request.headers.get("User-Agent") || "unknown";
+        
+        await env.EVENT_TRACK_DB.prepare(`
+          INSERT INTO error_logs (
+            endpoint, method, error_type, error_message, stack_trace,
+            user_id, request_body, ip_address, user_agent
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+          errorData.endpoint || url.pathname,
+          errorData.method || method,
+          errorData.errorType || "unknown",
+          errorData.errorMessage || "No message",
+          errorData.stackTrace || null,
+          errorData.userId || null,
+          errorData.requestBody || null,
+          clientIP,
+          userAgent.substring(0, 255) // Truncate user agent
+        ).run();
+        
+        console.log(`[ERROR LOGGED] ${errorData.errorType}: ${errorData.errorMessage}`);
+      } catch (logErr) {
+        // Don't let logging errors break the app
+        console.error("Failed to log error:", logErr);
+      }
+    };
+
     // --- Allowed Origins (CORS Security) ---
     const ALLOWED_ORIGINS = [
       "https://itai.gg",
@@ -573,6 +647,12 @@ export default {
         });
       } catch (err) {
         console.error("OAuth callback error:", err);
+        await logError({
+          endpoint: "/auth/callback",
+          errorType: "auth",
+          errorMessage: err.message,
+          stackTrace: err.stack
+        });
         return new Response("Authentication error", { status: 500 });
       }
     }
@@ -1263,6 +1343,12 @@ You don't have permission to view this content. Contact an administrator if you 
         });
       } catch (err) {
         console.error("Heartbeat error:", err);
+        await logError({
+          endpoint: "/widget/heartbeat",
+          errorType: "db",
+          errorMessage: err.message,
+          stackTrace: err.stack
+        });
         return new Response(JSON.stringify({ error: "Failed to record heartbeat" }), {
           status: 500,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -1513,6 +1599,13 @@ You don't have permission to view this content. Contact an administrator if you 
           });
         } catch (err) {
           console.error("List records error:", err);
+          await logError({
+            endpoint: "/attendance/records",
+            errorType: "db",
+            errorMessage: err.message,
+            stackTrace: err.stack,
+            userId: user?.userId
+          });
           return new Response(JSON.stringify({ error: "Failed to list records" }), {
             status: 500,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -2138,6 +2231,13 @@ You don't have permission to view this content. Contact an administrator if you 
         });
       } catch (err) {
         console.error("Error creating tile event:", err);
+        await logError({
+          endpoint: "/admin/tile-events",
+          errorType: "db",
+          errorMessage: err.message,
+          stackTrace: err.stack,
+          userId: user?.userId
+        });
         return new Response(JSON.stringify({ error: err.message }), {
           status: 500,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -2443,6 +2543,13 @@ You don't have permission to view this content. Contact an administrator if you 
         });
       } catch (err) {
         console.error("Error unlocking tile:", err);
+        await logError({
+          endpoint: url.pathname,
+          errorType: "db",
+          errorMessage: err.message,
+          stackTrace: err.stack,
+          userId: user?.userId
+        });
         return new Response(JSON.stringify({ error: err.message }), {
           status: 500,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -2591,6 +2698,203 @@ You don't have permission to view this content. Contact an administrator if you 
         });
       } catch (err) {
         console.error("Error syncing from sheet:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
+    // ==========================================================================
+    // ERROR LOG ADMIN ENDPOINTS
+    // ==========================================================================
+
+    // --- GET /admin/error-logs - View error logs ---
+    if (method === "GET" && url.pathname === "/admin/error-logs") {
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !ADMIN_USER_IDS.includes(user.userId)) {
+        return new Response(JSON.stringify({ error: "Admin access required" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initErrorLogTable();
+        
+        // Parse query params
+        const limit = parseInt(url.searchParams.get("limit")) || 50;
+        const offset = parseInt(url.searchParams.get("offset")) || 0;
+        const errorType = url.searchParams.get("type") || null;
+        const resolved = url.searchParams.get("resolved");
+        const startDate = url.searchParams.get("start") || null;
+        const endDate = url.searchParams.get("end") || null;
+        
+        // Build query with filters
+        let query = `SELECT * FROM error_logs WHERE 1=1`;
+        const params = [];
+        
+        if (errorType) {
+          query += ` AND error_type = ?`;
+          params.push(errorType);
+        }
+        
+        if (resolved !== null && resolved !== "") {
+          query += ` AND resolved = ?`;
+          params.push(resolved === "true" ? 1 : 0);
+        }
+        
+        if (startDate) {
+          query += ` AND timestamp >= ?`;
+          params.push(startDate);
+        }
+        
+        if (endDate) {
+          query += ` AND timestamp <= ?`;
+          params.push(endDate);
+        }
+        
+        query += ` ORDER BY timestamp DESC LIMIT ? OFFSET ?`;
+        params.push(limit, offset);
+        
+        const result = await env.EVENT_TRACK_DB.prepare(query).bind(...params).all();
+        
+        // Get total count for pagination
+        let countQuery = `SELECT COUNT(*) as total FROM error_logs WHERE 1=1`;
+        const countParams = [];
+        if (errorType) {
+          countQuery += ` AND error_type = ?`;
+          countParams.push(errorType);
+        }
+        if (resolved !== null && resolved !== "") {
+          countQuery += ` AND resolved = ?`;
+          countParams.push(resolved === "true" ? 1 : 0);
+        }
+        
+        const countResult = await env.EVENT_TRACK_DB.prepare(countQuery)
+          .bind(...countParams).first();
+        
+        // Get error type summary
+        const typeSummary = await env.EVENT_TRACK_DB.prepare(`
+          SELECT error_type, COUNT(*) as count, 
+                 SUM(CASE WHEN resolved = 0 THEN 1 ELSE 0 END) as unresolved
+          FROM error_logs 
+          GROUP BY error_type 
+          ORDER BY count DESC
+        `).all();
+        
+        return new Response(JSON.stringify({
+          logs: result.results || [],
+          total: countResult?.total || 0,
+          limit,
+          offset,
+          summary: typeSummary.results || []
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error fetching error logs:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
+    // --- PUT /admin/error-logs/:id - Update error log (mark resolved, add notes) ---
+    if (method === "PUT" && url.pathname.match(/^\/admin\/error-logs\/\d+$/)) {
+      const logId = parseInt(url.pathname.split('/')[3]);
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !ADMIN_USER_IDS.includes(user.userId)) {
+        return new Response(JSON.stringify({ error: "Admin access required" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        const body = await request.json();
+        const { resolved, notes } = body;
+        
+        await env.EVENT_TRACK_DB.prepare(`
+          UPDATE error_logs SET resolved = ?, notes = ? WHERE id = ?
+        `).bind(resolved ? 1 : 0, notes || null, logId).run();
+        
+        return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error updating error log:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
+    // --- DELETE /admin/error-logs/:id - Delete a single error log ---
+    if (method === "DELETE" && url.pathname.match(/^\/admin\/error-logs\/\d+$/)) {
+      const logId = parseInt(url.pathname.split('/')[3]);
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !ADMIN_USER_IDS.includes(user.userId)) {
+        return new Response(JSON.stringify({ error: "Admin access required" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await env.EVENT_TRACK_DB.prepare(`DELETE FROM error_logs WHERE id = ?`).bind(logId).run();
+        
+        return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error deleting error log:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
+    // --- DELETE /admin/error-logs - Clear resolved logs or all logs ---
+    if (method === "DELETE" && url.pathname === "/admin/error-logs") {
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !ADMIN_USER_IDS.includes(user.userId)) {
+        return new Response(JSON.stringify({ error: "Admin access required" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        const clearAll = url.searchParams.get("all") === "true";
+        
+        if (clearAll) {
+          await env.EVENT_TRACK_DB.prepare(`DELETE FROM error_logs`).run();
+        } else {
+          // Only clear resolved logs
+          await env.EVENT_TRACK_DB.prepare(`DELETE FROM error_logs WHERE resolved = 1`).run();
+        }
+        
+        return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error clearing error logs:", err);
         return new Response(JSON.stringify({ error: err.message }), {
           status: 500,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
