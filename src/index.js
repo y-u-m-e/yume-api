@@ -60,15 +60,51 @@ async function getGoogleAccessToken(jwt) {
   return data.access_token;
 }
 
-async function readGoogleSheet(accessToken, spreadsheetId, sheetName) {
-  const range = `${sheetName}!A:D`; // Columns: Title, Description, ImageURL, Reward
-  const response = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`,
-    { headers: { Authorization: `Bearer ${accessToken}` } }
-  );
-  if (!response.ok) throw new Error(`Failed to read sheet: ${await response.text()}`);
-  const data = await response.json();
-  return data.values || [];
+async function readGoogleSheetPublic(spreadsheetId, sheetName) {
+  // Use the public CSV export endpoint (works for public sheets)
+  const csvUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
+  const response = await fetch(csvUrl);
+  
+  if (!response.ok) {
+    throw new Error(`Failed to read sheet. Make sure it's shared as "Anyone with the link can view". Status: ${response.status}`);
+  }
+  
+  const csvText = await response.text();
+  
+  // Parse CSV into rows
+  const rows = [];
+  const lines = csvText.split('\n');
+  
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    
+    // Simple CSV parsing (handles quoted fields)
+    const row = [];
+    let current = '';
+    let inQuotes = false;
+    
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      
+      if (char === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          current += '"';
+          i++; // Skip escaped quote
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (char === ',' && !inQuotes) {
+        row.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    row.push(current.trim()); // Last field
+    rows.push(row);
+  }
+  
+  return rows;
 }
 
 export default {
@@ -2271,22 +2307,8 @@ You don't have permission to view this content. Contact an administrator if you 
           });
         }
         
-        // Check if Google credentials are available
-        if (!env.GOOGLE_SERVICE_ACCOUNT_EMAIL || !env.GOOGLE_PRIVATE_KEY) {
-          return new Response(JSON.stringify({ 
-            error: "Google credentials not configured. Add GOOGLE_SERVICE_ACCOUNT_EMAIL and GOOGLE_PRIVATE_KEY secrets." 
-          }), {
-            status: 500,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
-          });
-        }
-        
-        // Authenticate with Google
-        const jwt = await createGoogleJWT(env.GOOGLE_SERVICE_ACCOUNT_EMAIL, env.GOOGLE_PRIVATE_KEY);
-        const accessToken = await getGoogleAccessToken(jwt);
-        
-        // Read from Google Sheet
-        const rows = await readGoogleSheet(accessToken, event.google_sheet_id, event.google_sheet_tab);
+        // Read from public Google Sheet (no credentials needed)
+        const rows = await readGoogleSheetPublic(event.google_sheet_id, event.google_sheet_tab);
         
         if (rows.length === 0) {
           return new Response(JSON.stringify({ 
