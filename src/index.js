@@ -1757,8 +1757,17 @@ You don't have permission to view this content. Contact an administrator if you 
       const token = request.headers.get("Cookie")?.match(/token=([^;]+)/)?.[1];
       const user = token ? await verifyToken(token) : null;
       
+      // Debug logging
+      console.log("Create tile event - token exists:", !!token);
+      console.log("Create tile event - user:", user ? { userId: user.userId } : null);
+      console.log("Create tile event - ADMIN_USER_IDS:", ADMIN_USER_IDS);
+      console.log("Create tile event - is in admin list:", user ? ADMIN_USER_IDS.includes(user.userId) : false);
+      
       if (!user || !await hasAccess(user.userId, 'events')) {
-        return new Response(JSON.stringify({ error: "Admin access required" }), {
+        return new Response(JSON.stringify({ 
+          error: "Admin access required",
+          debug: { hasToken: !!token, hasUser: !!user, userId: user?.userId }
+        }), {
           status: 403,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
         });
