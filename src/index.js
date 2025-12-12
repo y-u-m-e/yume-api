@@ -3000,15 +3000,14 @@ You don't have permission to view this content. Contact an administrator if you 
           const title = sanitizeString(tile.title || '', 200);
           const description = sanitizeString(tile.description || '', 500);
           const imageUrl = sanitizeString(tile.image_url || '', 500);
-          const reward = sanitizeString(tile.reward || '', 200);
           const unlockKeywords = sanitizeString(tile.unlock_keywords || '', 500);
           const isStart = tile.is_start ? 1 : 0;
           const isEnd = tile.is_end ? 1 : 0;
           
           await env.EVENT_TRACK_DB.prepare(`
-            INSERT INTO tile_event_tiles (event_id, position, title, description, image_url, reward, is_start, is_end, unlock_keywords)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `).bind(eventId, position, title, description, imageUrl, reward, isStart, isEnd, unlockKeywords).run();
+            INSERT INTO tile_event_tiles (event_id, position, title, description, image_url, is_start, is_end, unlock_keywords)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(eventId, position, title, description, imageUrl, isStart, isEnd, unlockKeywords).run();
         }
         
         return new Response(JSON.stringify({ success: true, count: tiles.length }), {
@@ -3052,15 +3051,14 @@ You don't have permission to view this content. Contact an administrator if you 
           const title = sanitizeString(tile.title || '', 200);
           const description = sanitizeString(tile.description || '', 500);
           const imageUrl = sanitizeString(tile.image_url || '', 500);
-          const reward = sanitizeString(tile.reward || '', 200);
           const unlockKeywords = sanitizeString(tile.unlock_keywords || '', 500);
           const isStart = i === 0 ? 1 : 0;
           const isEnd = i === tiles.length - 1 ? 1 : 0;
           
           await env.EVENT_TRACK_DB.prepare(`
-            INSERT INTO tile_event_tiles (event_id, position, title, description, image_url, reward, is_start, is_end, unlock_keywords)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `).bind(eventId, position, title, description, imageUrl, reward, isStart, isEnd, unlockKeywords).run();
+            INSERT INTO tile_event_tiles (event_id, position, title, description, image_url, is_start, is_end, unlock_keywords)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(eventId, position, title, description, imageUrl, isStart, isEnd, unlockKeywords).run();
         }
         
         return new Response(JSON.stringify({ success: true, count: tiles.length }), {
@@ -3319,7 +3317,7 @@ You don't have permission to view this content. Contact an administrator if you 
         await env.EVENT_TRACK_DB.prepare(`DELETE FROM tile_event_tiles WHERE event_id = ?`).bind(eventId).run();
         
         // Insert tiles from sheet
-        // Expected columns: A=Title, B=Description, C=ImageURL, D=Reward, E=Keywords (for AI auto-approval)
+        // Expected columns: A=Title, B=Description, C=ImageURL, D=Keywords (for AI auto-approval)
         let insertedCount = 0;
         for (let i = 0; i < dataRows.length; i++) {
           const row = dataRows[i];
@@ -3330,15 +3328,14 @@ You don't have permission to view this content. Contact an administrator if you 
           
           const description = sanitizeString(row[1] || '', 500);
           const imageUrl = sanitizeString(row[2] || '', 500);
-          const reward = sanitizeString(row[3] || '', 200);
-          const unlockKeywords = sanitizeString(row[4] || '', 500);
+          const unlockKeywords = sanitizeString(row[3] || '', 500);
           const isStart = i === 0 ? 1 : 0;
           const isEnd = i === dataRows.length - 1 ? 1 : 0;
           
           await env.EVENT_TRACK_DB.prepare(`
-            INSERT INTO tile_event_tiles (event_id, position, title, description, image_url, reward, is_start, is_end, unlock_keywords)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `).bind(eventId, i, title, description, imageUrl, reward, isStart, isEnd, unlockKeywords).run();
+            INSERT INTO tile_event_tiles (event_id, position, title, description, image_url, is_start, is_end, unlock_keywords)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(eventId, i, title, description, imageUrl, isStart, isEnd, unlockKeywords).run();
           
           insertedCount++;
         }
