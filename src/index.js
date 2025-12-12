@@ -1933,6 +1933,16 @@ You don't have permission to view this content. Contact an administrator if you 
       } catch (e) {
         // Column already exists, ignore
       }
+      
+      // Add required_keyword column to events if it doesn't exist
+      // This is the mandatory phrase that must appear in all submissions for this event
+      try {
+        await env.EVENT_TRACK_DB.prepare(`
+          ALTER TABLE tile_events ADD COLUMN required_keyword TEXT
+        `).run();
+      } catch (e) {
+        // Column already exists, ignore
+      }
     };
 
     // --- GET /tile-events - List all tile events ---
@@ -2217,6 +2227,18 @@ You don't have permission to view this content. Contact an administrator if you 
           });
         }
         
+        // Get event info (for required_keyword)
+        const event = await env.EVENT_TRACK_DB.prepare(`
+          SELECT * FROM tile_events WHERE id = ?
+        `).bind(eventId).first();
+        
+        if (!event) {
+          return new Response(JSON.stringify({ error: "Event not found" }), {
+            status: 404,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
         // Get tile info
         const tile = await env.EVENT_TRACK_DB.prepare(`
           SELECT * FROM tile_event_tiles WHERE id = ? AND event_id = ?
@@ -2238,14 +2260,7 @@ You don't have permission to view this content. Contact an administrator if you 
           });
         }
         
-        // Check if this is the next tile to unlock
-        const canUnlock = tile.position === 0 || unlockedTiles.includes(tile.position - 1);
-        if (!canUnlock) {
-          return new Response(JSON.stringify({ error: "You must complete the previous tile first" }), {
-            status: 400,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
-          });
-        }
+        // All tiles are accessible (no sequential requirement)
         
         // Check for pending submission
         const pendingSubmission = await env.EVENT_TRACK_DB.prepare(`
@@ -2393,58 +2408,57 @@ You don't have permission to view this content. Contact an administrator if you 
         }
         
         // Process extracted text for keyword matching
-        if (ocrText && tile.unlock_keywords) {
+        // Two-tier verification:
+        // 1. Event's required_keyword MUST be found (if set)
+        // 2. At least one tile keyword MUST be found (if set)
+        if (ocrText) {
           const ocrLower = ocrText.toLowerCase();
-          const rawKeywords = tile.unlock_keywords.split(',').map(k => k.trim()).filter(k => k);
+          let eventKeywordFound = true; // Default to true if no event keyword set
+          let tileKeywordFound = true;  // Default to true if no tile keywords set
+          let matchDetails = [];
           
-          // Parse keyword modifiers
-          let requireAll = false;
-          const keywords = [];
-          const exactPhrases = [];
-          
-          for (const kw of rawKeywords) {
-            const kwLower = kw.toLowerCase();
-            if (kwLower.startsWith('all:')) {
-              requireAll = true;
-            } else if (kwLower.startsWith('exact:')) {
-              exactPhrases.push(kwLower.replace('exact:', '').trim());
+          // Check event's required keyword (mandatory phrase)
+          if (event.required_keyword && event.required_keyword.trim()) {
+            const requiredPhrase = event.required_keyword.trim().toLowerCase();
+            eventKeywordFound = ocrLower.includes(requiredPhrase);
+            if (eventKeywordFound) {
+              matchDetails.push(`event: "${event.required_keyword}"`);
+              console.log(`Event required keyword found: "${event.required_keyword}"`);
             } else {
-              keywords.push(kwLower);
+              console.log(`Event required keyword NOT found: "${event.required_keyword}"`);
             }
           }
           
-          // Check exact phrase matches
-          const exactMatches = exactPhrases.filter(phrase => ocrLower.includes(phrase));
-          
-          // Check keyword matches (must be whole words, not partial)
-          const keywordMatches = keywords.filter(keyword => {
-            const regex = new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-            return regex.test(ocrText);
-          });
-          
-          const allMatches = [...exactMatches, ...keywordMatches];
-          const totalKeywords = exactPhrases.length + keywords.length;
-          
-          // Calculate confidence
-          aiConfidence = totalKeywords > 0 ? allMatches.length / totalKeywords : 0;
-          aiResult = allMatches.length > 0 
-            ? `match: ${allMatches.join(', ')}` 
-            : 'no_match';
-          
-          console.log(`OCR keyword matching: ${allMatches.length}/${totalKeywords} (requireAll: ${requireAll})`);
-          console.log(`Matched: [${allMatches.join(', ')}]`);
-          
-          // Auto-approve logic:
-          // - If "all:" prefix used, ALL keywords must match
-          // - Otherwise, at least one match required
-          if (requireAll) {
-            autoApproved = allMatches.length === totalKeywords;
-          } else {
-            autoApproved = allMatches.length > 0;
+          // Check tile's drop keywords (any one must match)
+          if (tile.unlock_keywords && tile.unlock_keywords.trim()) {
+            const keywords = tile.unlock_keywords.split(',').map(k => k.trim().toLowerCase()).filter(k => k);
+            const foundKeywords = keywords.filter(keyword => {
+              // Use word boundary matching
+              const regex = new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+              return regex.test(ocrText);
+            });
+            
+            tileKeywordFound = foundKeywords.length > 0;
+            if (tileKeywordFound) {
+              matchDetails.push(`drop: "${foundKeywords.join('", "')}"`);
+              console.log(`Tile keywords found: [${foundKeywords.join(', ')}]`);
+            } else {
+              console.log(`No tile keywords found from: [${keywords.join(', ')}]`);
+            }
+            
+            // Calculate confidence based on tile keywords matched
+            aiConfidence = keywords.length > 0 ? foundKeywords.length / keywords.length : 0;
           }
           
+          // Auto-approve only if BOTH conditions pass
+          autoApproved = eventKeywordFound && tileKeywordFound;
+          
           if (autoApproved) {
-            console.log("Auto-approving based on OCR text match");
+            aiResult = `match: ${matchDetails.join(', ')}`;
+            console.log("Auto-approving: event keyword + tile keyword both matched");
+          } else {
+            aiResult = `no_match: event=${eventKeywordFound}, tile=${tileKeywordFound}`;
+            console.log(`Not auto-approving: eventKeywordFound=${eventKeywordFound}, tileKeywordFound=${tileKeywordFound}`);
           }
         } else if (!canRunAI) {
           console.log(`Image too large for OCR (${Math.round(imageFile.size / 1024)}KB), skipping auto-scan`);
@@ -2845,6 +2859,7 @@ You don't have permission to view this content. Contact an administrator if you 
         const description = sanitizeString(body.description || '', 1000);
         const googleSheetId = sanitizeString(body.google_sheet_id || '', 100);
         const googleSheetTab = sanitizeString(body.google_sheet_tab || '', 100);
+        const requiredKeyword = sanitizeString(body.required_keyword || '', 200);
         
         if (!name) {
           return new Response(JSON.stringify({ error: "Name is required" }), {
@@ -2854,9 +2869,9 @@ You don't have permission to view this content. Contact an administrator if you 
         }
         
         const result = await env.EVENT_TRACK_DB.prepare(`
-          INSERT INTO tile_events (name, description, google_sheet_id, google_sheet_tab, created_by)
-          VALUES (?, ?, ?, ?, ?)
-        `).bind(name, description, googleSheetId, googleSheetTab, user.userId).run();
+          INSERT INTO tile_events (name, description, google_sheet_id, google_sheet_tab, created_by, required_keyword)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).bind(name, description, googleSheetId, googleSheetTab, user.userId, requiredKeyword).run();
         
         return new Response(JSON.stringify({ 
           success: true, 
@@ -2903,12 +2918,13 @@ You don't have permission to view this content. Contact an administrator if you 
         const isActive = body.is_active ? 1 : 0;
         const googleSheetId = sanitizeString(body.google_sheet_id || '', 100);
         const googleSheetTab = sanitizeString(body.google_sheet_tab || '', 100);
+        const requiredKeyword = sanitizeString(body.required_keyword || '', 200);
         
         await env.EVENT_TRACK_DB.prepare(`
           UPDATE tile_events 
-          SET name = ?, description = ?, is_active = ?, google_sheet_id = ?, google_sheet_tab = ?, updated_at = CURRENT_TIMESTAMP
+          SET name = ?, description = ?, is_active = ?, google_sheet_id = ?, google_sheet_tab = ?, required_keyword = ?, updated_at = CURRENT_TIMESTAMP
           WHERE id = ?
-        `).bind(name, description, isActive, googleSheetId, googleSheetTab, eventId).run();
+        `).bind(name, description, isActive, googleSheetId, googleSheetTab, requiredKeyword, eventId).run();
         
         return new Response(JSON.stringify({ success: true }), {
           status: 200,
