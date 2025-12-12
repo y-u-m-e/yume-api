@@ -167,7 +167,8 @@ export default {
               cruddy: result.access_cruddy === 1,
               docs: result.access_docs === 1,
               devops: result.access_devops === 1,
-              infographic: result.access_infographic === 1
+              infographic: result.access_infographic === 1,
+              events: result.access_events === 1
             }
           };
         }
@@ -203,6 +204,7 @@ export default {
         case 'cruddy': return allowedUsersCruddy.includes(userId);
         case 'devops': return allowedUsersGeneral.includes(userId);
         case 'infographic': return allowedUsersCruddy.includes(userId);
+        case 'events': return allowedUsersGeneral.includes(userId);
         default: return allowedUsersGeneral.includes(userId);
       }
     };
@@ -555,6 +557,7 @@ export default {
             access_docs INTEGER DEFAULT 0,
             access_devops INTEGER DEFAULT 0,
             access_infographic INTEGER DEFAULT 0,
+            access_events INTEGER DEFAULT 0,
             is_banned INTEGER DEFAULT 0,
             notes TEXT,
             last_login TEXT,
@@ -564,7 +567,7 @@ export default {
         `).run();
         
         // Add new columns if they don't exist (for migration)
-        const columns = ['is_admin', 'access_devops', 'access_infographic', 'is_banned', 'notes', 'last_login', 'updated_at', 'global_name', 'avatar'];
+        const columns = ['is_admin', 'access_devops', 'access_infographic', 'access_events', 'is_banned', 'notes', 'last_login', 'updated_at', 'global_name', 'avatar'];
         for (const col of columns) {
           try {
             await env.EVENT_TRACK_DB.prepare(`ALTER TABLE admin_users ADD COLUMN ${col} ${col.startsWith('is_') || col.startsWith('access_') ? 'INTEGER DEFAULT 0' : 'TEXT'}`).run();
@@ -618,6 +621,7 @@ export default {
           access_docs,
           access_devops,
           access_infographic,
+          access_events,
           is_banned,
           notes
         } = body;
@@ -639,10 +643,10 @@ export default {
         await env.EVENT_TRACK_DB.prepare(`
           INSERT INTO admin_users (
             discord_id, username, global_name, avatar, is_admin,
-            access_cruddy, access_docs, access_devops, access_infographic,
+            access_cruddy, access_docs, access_devops, access_infographic, access_events,
             is_banned, notes, updated_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
           ON CONFLICT(discord_id) DO UPDATE SET
             username = excluded.username,
             global_name = excluded.global_name,
@@ -652,6 +656,7 @@ export default {
             access_docs = excluded.access_docs,
             access_devops = excluded.access_devops,
             access_infographic = excluded.access_infographic,
+            access_events = excluded.access_events,
             is_banned = excluded.is_banned,
             notes = excluded.notes,
             updated_at = datetime('now')
@@ -665,6 +670,7 @@ export default {
           access_docs ? 1 : 0,
           access_devops ? 1 : 0,
           access_infographic ? 1 : 0,
+          access_events ? 1 : 0,
           is_banned ? 1 : 0,
           sanitizedNotes || null
         ).run();
@@ -1751,7 +1757,7 @@ You don't have permission to view this content. Contact an administrator if you 
       const token = request.headers.get("Cookie")?.match(/token=([^;]+)/)?.[1];
       const user = token ? await verifyToken(token) : null;
       
-      if (!user || !await hasAccess(user.userId, 'admin')) {
+      if (!user || !await hasAccess(user.userId, 'events')) {
         return new Response(JSON.stringify({ error: "Admin access required" }), {
           status: 403,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -1801,7 +1807,7 @@ You don't have permission to view this content. Contact an administrator if you 
       const token = request.headers.get("Cookie")?.match(/token=([^;]+)/)?.[1];
       const user = token ? await verifyToken(token) : null;
       
-      if (!user || !await hasAccess(user.userId, 'admin')) {
+      if (!user || !await hasAccess(user.userId, 'events')) {
         return new Response(JSON.stringify({ error: "Admin access required" }), {
           status: 403,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -1843,7 +1849,7 @@ You don't have permission to view this content. Contact an administrator if you 
       const token = request.headers.get("Cookie")?.match(/token=([^;]+)/)?.[1];
       const user = token ? await verifyToken(token) : null;
       
-      if (!user || !await hasAccess(user.userId, 'admin')) {
+      if (!user || !await hasAccess(user.userId, 'events')) {
         return new Response(JSON.stringify({ error: "Admin access required" }), {
           status: 403,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -1879,7 +1885,7 @@ You don't have permission to view this content. Contact an administrator if you 
       const token = request.headers.get("Cookie")?.match(/token=([^;]+)/)?.[1];
       const user = token ? await verifyToken(token) : null;
       
-      if (!user || !await hasAccess(user.userId, 'admin')) {
+      if (!user || !await hasAccess(user.userId, 'events')) {
         return new Response(JSON.stringify({ error: "Admin access required" }), {
           status: 403,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -1927,7 +1933,7 @@ You don't have permission to view this content. Contact an administrator if you 
       const token = request.headers.get("Cookie")?.match(/token=([^;]+)/)?.[1];
       const user = token ? await verifyToken(token) : null;
       
-      if (!user || !await hasAccess(user.userId, 'admin')) {
+      if (!user || !await hasAccess(user.userId, 'events')) {
         return new Response(JSON.stringify({ error: "Admin access required" }), {
           status: 403,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -1978,7 +1984,7 @@ You don't have permission to view this content. Contact an administrator if you 
       const token = request.headers.get("Cookie")?.match(/token=([^;]+)/)?.[1];
       const user = token ? await verifyToken(token) : null;
       
-      if (!user || !await hasAccess(user.userId, 'admin')) {
+      if (!user || !await hasAccess(user.userId, 'events')) {
         return new Response(JSON.stringify({ error: "Admin access required" }), {
           status: 403,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -2021,7 +2027,7 @@ You don't have permission to view this content. Contact an administrator if you 
       const token = request.headers.get("Cookie")?.match(/token=([^;]+)/)?.[1];
       const user = token ? await verifyToken(token) : null;
       
-      if (!user || !await hasAccess(user.userId, 'admin')) {
+      if (!user || !await hasAccess(user.userId, 'events')) {
         return new Response(JSON.stringify({ error: "Admin access required" }), {
           status: 403,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -2106,7 +2112,7 @@ You don't have permission to view this content. Contact an administrator if you 
       const token = request.headers.get("Cookie")?.match(/token=([^;]+)/)?.[1];
       const user = token ? await verifyToken(token) : null;
       
-      if (!user || !await hasAccess(user.userId, 'admin')) {
+      if (!user || !await hasAccess(user.userId, 'events')) {
         return new Response(JSON.stringify({ error: "Admin access required" }), {
           status: 403,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
