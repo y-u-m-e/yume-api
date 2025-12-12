@@ -1828,32 +1828,189 @@ You don't have permission to view this content. Contact an administrator if you 
       try {
         await initTileEventTables();
         
-        // Get or create progress for this user
+        // Get progress for this user (don't auto-create)
         let progress = await env.EVENT_TRACK_DB.prepare(`
           SELECT * FROM tile_event_progress WHERE event_id = ? AND discord_id = ?
         `).bind(eventId, user.userId).first();
         
         if (!progress) {
-          // Create initial progress
-          await env.EVENT_TRACK_DB.prepare(`
-            INSERT INTO tile_event_progress (event_id, discord_id, discord_username, current_tile, tiles_unlocked)
-            VALUES (?, ?, ?, 0, '[]')
-          `).bind(eventId, user.userId, user.username).run();
-          
-          progress = await env.EVENT_TRACK_DB.prepare(`
-            SELECT * FROM tile_event_progress WHERE event_id = ? AND discord_id = ?
-          `).bind(eventId, user.userId).first();
+          // User hasn't joined this event
+          return new Response(JSON.stringify({ 
+            progress: null, 
+            joined: false,
+            message: "You haven't joined this event yet"
+          }), {
+            status: 200,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
         }
         
         // Parse tiles_unlocked JSON
         progress.tiles_unlocked = JSON.parse(progress.tiles_unlocked || '[]');
         
-        return new Response(JSON.stringify({ progress }), {
+        return new Response(JSON.stringify({ progress, joined: true }), {
           status: 200,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
         });
       } catch (err) {
         console.error("Error fetching progress:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
+    // --- POST /tile-events/:id/join - Join an event ---
+    if (method === "POST" && url.pathname.match(/^\/tile-events\/\d+\/join$/)) {
+      const eventId = parseInt(url.pathname.split('/')[2]);
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
+      
+      if (!token) {
+        return new Response(JSON.stringify({ error: "Authentication required" }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      const user = await verifyToken(token);
+      if (!user) {
+        return new Response(JSON.stringify({ error: "Invalid token" }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initTileEventTables();
+        
+        // Check if event exists and is active
+        const event = await env.EVENT_TRACK_DB.prepare(`
+          SELECT * FROM tile_events WHERE id = ?
+        `).bind(eventId).first();
+        
+        if (!event) {
+          return new Response(JSON.stringify({ error: "Event not found" }), {
+            status: 404,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        if (!event.is_active) {
+          return new Response(JSON.stringify({ error: "This event has ended" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Check if already joined
+        const existing = await env.EVENT_TRACK_DB.prepare(`
+          SELECT id FROM tile_event_progress WHERE event_id = ? AND discord_id = ?
+        `).bind(eventId, user.userId).first();
+        
+        if (existing) {
+          return new Response(JSON.stringify({ error: "You've already joined this event" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Create progress entry
+        await env.EVENT_TRACK_DB.prepare(`
+          INSERT INTO tile_event_progress (event_id, discord_id, discord_username, current_tile, tiles_unlocked)
+          VALUES (?, ?, ?, 0, '[]')
+        `).bind(eventId, user.userId, user.username).run();
+        
+        return new Response(JSON.stringify({ 
+          success: true, 
+          message: "Successfully joined the event!"
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error joining event:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
+    // --- POST /tile-events/:id/leave - Leave an event ---
+    if (method === "POST" && url.pathname.match(/^\/tile-events\/\d+\/leave$/)) {
+      const eventId = parseInt(url.pathname.split('/')[2]);
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
+      
+      if (!token) {
+        return new Response(JSON.stringify({ error: "Authentication required" }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      const user = await verifyToken(token);
+      if (!user) {
+        return new Response(JSON.stringify({ error: "Invalid token" }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initTileEventTables();
+        
+        await env.EVENT_TRACK_DB.prepare(`
+          DELETE FROM tile_event_progress WHERE event_id = ? AND discord_id = ?
+        `).bind(eventId, user.userId).run();
+        
+        return new Response(JSON.stringify({ 
+          success: true, 
+          message: "Left the event"
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error leaving event:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
+    // --- Admin: DELETE /admin/tile-events/:id/participants/:discordId - Remove a participant ---
+    if (method === "DELETE" && url.pathname.match(/^\/admin\/tile-events\/\d+\/participants\/\d+$/)) {
+      const parts = url.pathname.split('/');
+      const eventId = parseInt(parts[3]);
+      const discordId = parts[5];
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !await hasAccess(user.userId, 'events')) {
+        return new Response(JSON.stringify({ error: "Events access required" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initTileEventTables();
+        
+        const result = await env.EVENT_TRACK_DB.prepare(`
+          DELETE FROM tile_event_progress WHERE event_id = ? AND discord_id = ?
+        `).bind(eventId, discordId).run();
+        
+        return new Response(JSON.stringify({ 
+          success: true,
+          removed: result.meta.changes > 0
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error removing participant:", err);
         return new Response(JSON.stringify({ error: err.message }), {
           status: 500,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
