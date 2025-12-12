@@ -2324,57 +2324,99 @@ You don't have permission to view this content. Contact an administrator if you 
         // Only run AI if image is small enough
         if (env.AI && canRunAI) {
           try {
-            console.log("Running AI vision analysis...");
+            console.log("Running AI OCR text extraction...");
             
-            // Use LLaVA vision-language model for OSRS screenshot analysis
-            // Build a dynamic prompt based on tile info
-            const tileContext = tile.unlock_keywords 
-              ? `Look for these specific items or achievements: ${tile.unlock_keywords}`
-              : `Look for any notable items, drops, achievements, or game activity`;
-            
-            const visionPrompt = `Analyze this Old School RuneScape (OSRS) screenshot. 
-${tileContext}
+            // OCR-focused prompt: Extract ONLY visible text, no interpretation
+            // This reduces false positives from AI "understanding" vs actual text
+            const ocrPrompt = `You are an OCR text extractor. Your ONLY job is to read and output the exact text visible in this image.
 
-Please describe:
-1. What activity or achievement is shown
-2. Any item drops or rewards visible
-3. Any text visible in chat or interfaces
-4. Player name if visible
+RULES:
+1. Output ONLY text that is clearly visible and readable in the image
+2. Do NOT describe the image or what you think is happening
+3. Do NOT add any interpretation or context
+4. Include chat messages, notifications, item names, player names, interface text
+5. Separate different text elements with newlines
+6. If you cannot read text clearly, skip it
+7. Output "NO_TEXT_FOUND" if no readable text is visible
 
-Be concise and focus on verifiable details.`;
+OUTPUT FORMAT:
+Just the raw text, one element per line. Nothing else.`;
             
             const visionResponse = await env.AI.run("@cf/llava-hf/llava-1.5-7b-hf", {
-              prompt: visionPrompt,
+              prompt: ocrPrompt,
               image: [...new Uint8Array(imageBuffer)]
             });
             
-            console.log("AI Vision response:", JSON.stringify(visionResponse));
+            console.log("AI OCR response:", JSON.stringify(visionResponse));
             
             if (visionResponse && (visionResponse.response || visionResponse.description)) {
               ocrText = visionResponse.response || visionResponse.description;
-              aiResult = 'analyzed';
+              aiResult = 'ocr_extracted';
               
-              // Check if OCR text matches tile unlock keywords for auto-approval
-              if (tile.unlock_keywords && ocrText) {
-                const keywords = tile.unlock_keywords.toLowerCase().split(',').map(k => k.trim()).filter(k => k);
+              // Check if extracted text contains required keywords
+              // Keywords can use special prefixes:
+              // - "exact:" for exact phrase match (case-insensitive)
+              // - "all:" to require ALL following keywords
+              // - Default: any keyword match
+              if (tile.unlock_keywords && ocrText && ocrText !== 'NO_TEXT_FOUND') {
                 const ocrLower = ocrText.toLowerCase();
-                const foundKeywords = keywords.filter(keyword => ocrLower.includes(keyword));
+                const rawKeywords = tile.unlock_keywords.split(',').map(k => k.trim()).filter(k => k);
                 
-                // Calculate confidence based on keyword matches
-                aiConfidence = keywords.length > 0 ? foundKeywords.length / keywords.length : 0;
-                aiResult = foundKeywords.length > 0 ? `match: ${foundKeywords.join(', ')}` : 'no_match';
+                // Parse keyword modifiers
+                let requireAll = false;
+                const keywords = [];
+                const exactPhrases = [];
                 
-                console.log(`AI keyword matching: ${foundKeywords.length}/${keywords.length} keywords found`);
+                for (const kw of rawKeywords) {
+                  const kwLower = kw.toLowerCase();
+                  if (kwLower.startsWith('all:')) {
+                    requireAll = true;
+                  } else if (kwLower.startsWith('exact:')) {
+                    exactPhrases.push(kwLower.replace('exact:', '').trim());
+                  } else {
+                    keywords.push(kwLower);
+                  }
+                }
                 
-                // Auto-approve if at least one keyword matches (adjust threshold as needed)
-                if (foundKeywords.length > 0) {
-                  autoApproved = true;
-                  console.log("Auto-approving submission based on keyword match");
+                // Check exact phrase matches
+                const exactMatches = exactPhrases.filter(phrase => ocrLower.includes(phrase));
+                
+                // Check keyword matches (must be whole words, not partial)
+                const keywordMatches = keywords.filter(keyword => {
+                  // Use word boundary matching to avoid partial matches
+                  // e.g. "pet" should not match "carpet" or "compete"
+                  const regex = new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+                  return regex.test(ocrText);
+                });
+                
+                const allMatches = [...exactMatches, ...keywordMatches];
+                const totalKeywords = exactPhrases.length + keywords.length;
+                
+                // Calculate confidence
+                aiConfidence = totalKeywords > 0 ? allMatches.length / totalKeywords : 0;
+                aiResult = allMatches.length > 0 
+                  ? `match: ${allMatches.join(', ')}` 
+                  : 'no_match';
+                
+                console.log(`OCR keyword matching: ${allMatches.length}/${totalKeywords} (requireAll: ${requireAll})`);
+                console.log(`Matched: [${allMatches.join(', ')}]`);
+                
+                // Auto-approve logic:
+                // - If "all:" prefix used, ALL keywords must match
+                // - Otherwise, at least one match required
+                if (requireAll) {
+                  autoApproved = allMatches.length === totalKeywords;
+                } else {
+                  autoApproved = allMatches.length > 0;
+                }
+                
+                if (autoApproved) {
+                  console.log("Auto-approving based on OCR text match");
                 }
               }
             }
           } catch (aiErr) {
-            console.error("AI Vision failed:", aiErr.message, aiErr.stack);
+            console.error("AI OCR failed:", aiErr.message, aiErr.stack);
             aiResult = `error: ${aiErr.message}`;
             // Continue without AI - submission goes to manual review
           }
@@ -3542,54 +3584,81 @@ Be concise and focus on verifiable details.`;
         let matchedKeywords = [];
         let allKeywords = [];
         
-        // Parse keywords
+        // Parse keywords with special prefixes
+        // "exact:" for exact phrase match
+        // "all:" to require ALL keywords
+        let requireAll = false;
+        const exactPhrases = [];
+        const regularKeywords = [];
+        
         if (keywords.trim()) {
-          allKeywords = keywords.toLowerCase().split(',').map(k => k.trim()).filter(k => k);
+          const rawKeywords = keywords.split(',').map(k => k.trim()).filter(k => k);
+          for (const kw of rawKeywords) {
+            const kwLower = kw.toLowerCase();
+            if (kwLower.startsWith('all:')) {
+              requireAll = true;
+            } else if (kwLower.startsWith('exact:')) {
+              exactPhrases.push(kwLower.replace('exact:', '').trim());
+            } else {
+              regularKeywords.push(kwLower);
+            }
+          }
+          allKeywords = [...exactPhrases.map(p => `exact:${p}`), ...regularKeywords];
         }
         
         const imageSizeKB = Math.round(imageFile.size / 1024);
         
         if (env.AI) {
-          console.log(`Running AI debug scan on ${imageSizeKB}KB image...`);
+          console.log(`Running AI OCR debug scan on ${imageSizeKB}KB image...`);
           
-          // Build dynamic prompt
-          const keywordContext = allKeywords.length > 0 
-            ? `Look for these specific items or achievements: ${allKeywords.join(', ')}`
-            : `Look for any notable items, drops, achievements, or game activity`;
-          
-          const visionPrompt = `Analyze this Old School RuneScape (OSRS) screenshot. 
-${keywordContext}
+          // OCR-focused prompt: Extract ONLY visible text, no interpretation
+          const ocrPrompt = `You are an OCR text extractor. Your ONLY job is to read and output the exact text visible in this image.
 
-Please describe:
-1. What activity or achievement is shown
-2. Any item drops or rewards visible  
-3. Any text visible in chat or interfaces
-4. Player name if visible
+RULES:
+1. Output ONLY text that is clearly visible and readable in the image
+2. Do NOT describe the image or what you think is happening
+3. Do NOT add any interpretation or context
+4. Include chat messages, notifications, item names, player names, interface text
+5. Separate different text elements with newlines
+6. If you cannot read text clearly, skip it
+7. Output "NO_TEXT_FOUND" if no readable text is visible
 
-Be thorough and focus on verifiable details.`;
+OUTPUT FORMAT:
+Just the raw text, one element per line. Nothing else.`;
           
           try {
             const visionResponse = await env.AI.run("@cf/llava-hf/llava-1.5-7b-hf", {
-              prompt: visionPrompt,
+              prompt: ocrPrompt,
               image: [...new Uint8Array(imageBuffer)]
             });
             
-            console.log("AI Vision response:", JSON.stringify(visionResponse));
+            console.log("AI OCR response:", JSON.stringify(visionResponse));
             
             if (visionResponse && (visionResponse.response || visionResponse.description)) {
               ocrText = visionResponse.response || visionResponse.description;
-              aiResult = 'analyzed';
+              aiResult = 'ocr_extracted';
               
-              // Check keyword matches
-              if (allKeywords.length > 0 && ocrText) {
+              // Check keyword matches with word boundaries
+              if ((exactPhrases.length > 0 || regularKeywords.length > 0) && ocrText && ocrText !== 'NO_TEXT_FOUND') {
                 const ocrLower = ocrText.toLowerCase();
-                matchedKeywords = allKeywords.filter(keyword => ocrLower.includes(keyword));
-                aiConfidence = matchedKeywords.length / allKeywords.length;
+                
+                // Check exact phrase matches
+                const exactMatches = exactPhrases.filter(phrase => ocrLower.includes(phrase));
+                
+                // Check keyword matches with word boundaries (avoid partial matches like "pet" in "carpet")
+                const keywordMatches = regularKeywords.filter(keyword => {
+                  const regex = new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+                  return regex.test(ocrText);
+                });
+                
+                matchedKeywords = [...exactMatches.map(p => `exact:${p}`), ...keywordMatches];
+                const totalKeywords = exactPhrases.length + regularKeywords.length;
+                aiConfidence = totalKeywords > 0 ? matchedKeywords.length / totalKeywords : 0;
                 aiResult = matchedKeywords.length > 0 ? `match: ${matchedKeywords.join(', ')}` : 'no_match';
               }
             }
           } catch (aiErr) {
-            console.error("AI Vision failed:", aiErr);
+            console.error("AI OCR failed:", aiErr);
             aiResult = `error: ${aiErr.message}`;
           }
         } else {
@@ -3603,7 +3672,11 @@ Be thorough and focus on verifiable details.`;
           aiConfidence,
           matchedKeywords,
           allKeywords,
-          imageSizeKB
+          imageSizeKB,
+          requireAll,
+          wouldAutoApprove: requireAll 
+            ? matchedKeywords.length === allKeywords.length 
+            : matchedKeywords.length > 0
         }), {
           status: 200,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
