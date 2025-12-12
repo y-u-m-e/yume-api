@@ -1699,7 +1699,7 @@ You don't have permission to view this content. Contact an administrator if you 
     // --- GET /tile-events/:id/progress - Get user's progress on an event ---
     if (method === "GET" && url.pathname.match(/^\/tile-events\/\d+\/progress$/)) {
       const eventId = parseInt(url.pathname.split('/')[2]);
-      const token = request.headers.get("Cookie")?.match(/token=([^;]+)/)?.[1];
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
       
       if (!token) {
         return new Response(JSON.stringify({ error: "Authentication required" }), {
@@ -1754,7 +1754,7 @@ You don't have permission to view this content. Contact an administrator if you 
 
     // --- Admin: POST /admin/tile-events - Create a new tile event ---
     if (method === "POST" && url.pathname === "/admin/tile-events") {
-      const token = request.headers.get("Cookie")?.match(/token=([^;]+)/)?.[1];
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
       const user = token ? await verifyToken(token) : null;
       
       // Debug logging
@@ -1813,7 +1813,7 @@ You don't have permission to view this content. Contact an administrator if you 
     // --- Admin: PUT /admin/tile-events/:id - Update a tile event ---
     if (method === "PUT" && url.pathname.match(/^\/admin\/tile-events\/\d+$/)) {
       const eventId = parseInt(url.pathname.split('/')[3]);
-      const token = request.headers.get("Cookie")?.match(/token=([^;]+)/)?.[1];
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
       const user = token ? await verifyToken(token) : null;
       
       if (!user || !await hasAccess(user.userId, 'events')) {
@@ -1855,7 +1855,7 @@ You don't have permission to view this content. Contact an administrator if you 
     // --- Admin: DELETE /admin/tile-events/:id - Delete a tile event ---
     if (method === "DELETE" && url.pathname.match(/^\/admin\/tile-events\/\d+$/)) {
       const eventId = parseInt(url.pathname.split('/')[3]);
-      const token = request.headers.get("Cookie")?.match(/token=([^;]+)/)?.[1];
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
       const user = token ? await verifyToken(token) : null;
       
       if (!user || !await hasAccess(user.userId, 'events')) {
@@ -1891,7 +1891,7 @@ You don't have permission to view this content. Contact an administrator if you 
     // --- Admin: POST /admin/tile-events/:id/tiles - Add tiles to an event ---
     if (method === "POST" && url.pathname.match(/^\/admin\/tile-events\/\d+\/tiles$/)) {
       const eventId = parseInt(url.pathname.split('/')[3]);
-      const token = request.headers.get("Cookie")?.match(/token=([^;]+)/)?.[1];
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
       const user = token ? await verifyToken(token) : null;
       
       if (!user || !await hasAccess(user.userId, 'events')) {
@@ -1939,7 +1939,7 @@ You don't have permission to view this content. Contact an administrator if you 
     // --- Admin: PUT /admin/tile-events/:id/tiles/bulk - Replace all tiles ---
     if (method === "PUT" && url.pathname.match(/^\/admin\/tile-events\/\d+\/tiles\/bulk$/)) {
       const eventId = parseInt(url.pathname.split('/')[3]);
-      const token = request.headers.get("Cookie")?.match(/token=([^;]+)/)?.[1];
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
       const user = token ? await verifyToken(token) : null;
       
       if (!user || !await hasAccess(user.userId, 'events')) {
@@ -1990,7 +1990,7 @@ You don't have permission to view this content. Contact an administrator if you 
     // --- Admin: GET /admin/tile-events/:id/participants - Get all participants ---
     if (method === "GET" && url.pathname.match(/^\/admin\/tile-events\/\d+\/participants$/)) {
       const eventId = parseInt(url.pathname.split('/')[3]);
-      const token = request.headers.get("Cookie")?.match(/token=([^;]+)/)?.[1];
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
       const user = token ? await verifyToken(token) : null;
       
       if (!user || !await hasAccess(user.userId, 'events')) {
@@ -2033,7 +2033,7 @@ You don't have permission to view this content. Contact an administrator if you 
     // --- Admin: POST /admin/tile-events/:id/unlock - Unlock tile(s) for a user ---
     if (method === "POST" && url.pathname.match(/^\/admin\/tile-events\/\d+\/unlock$/)) {
       const eventId = parseInt(url.pathname.split('/')[3]);
-      const token = request.headers.get("Cookie")?.match(/token=([^;]+)/)?.[1];
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
       const user = token ? await verifyToken(token) : null;
       
       if (!user || !await hasAccess(user.userId, 'events')) {
@@ -2118,7 +2118,7 @@ You don't have permission to view this content. Contact an administrator if you 
     // --- Admin: POST /admin/tile-events/:id/reset-user - Reset a user's progress ---
     if (method === "POST" && url.pathname.match(/^\/admin\/tile-events\/\d+\/reset-user$/)) {
       const eventId = parseInt(url.pathname.split('/')[3]);
-      const token = request.headers.get("Cookie")?.match(/token=([^;]+)/)?.[1];
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
       const user = token ? await verifyToken(token) : null;
       
       if (!user || !await hasAccess(user.userId, 'events')) {
