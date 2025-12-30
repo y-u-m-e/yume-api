@@ -262,6 +262,7 @@ export default {
       "https://yumes-tools.itai.gg",
       "https://emuy.gg",
       "https://www.emuy.gg",
+      "https://ironforged-events.emuy.gg",
       "https://api.itai.gg",
       "https://api.emuy.gg",
       // Development
@@ -551,12 +552,14 @@ export default {
 
     // GET /auth/login - Redirect to Discord OAuth
     // Supports ?return_url= parameter to redirect back after login
+    // Supports ?source= parameter to track login source (e.g., 'ironforged-events')
     if (method === "GET" && url.pathname === "/auth/login") {
       const host = url.host;
       const redirectUri = getRedirectUri(host);
       const returnUrl = url.searchParams.get("return_url") || getDefaultReturnUrl(host);
-      // Encode return URL in state (base64)
-      const stateData = JSON.stringify({ returnUrl, nonce: crypto.randomUUID() });
+      const source = url.searchParams.get("source") || null;
+      // Encode return URL and source in state (base64)
+      const stateData = JSON.stringify({ returnUrl, source, nonce: crypto.randomUUID() });
       const state = btoa(stateData);
       const params = new URLSearchParams({
         client_id: env.DISCORD_CLIENT_ID,
@@ -615,12 +618,14 @@ export default {
         // Create session token
         const sessionToken = await createToken(user.id, user.username, user.avatar, user.global_name);
 
-        // Decode return URL from state
+        // Decode return URL and source from state
         let returnUrl = "https://yumes-tools.itai.gg/";
+        let source = null;
         const state = url.searchParams.get("state");
         if (state) {
           try {
             const stateData = JSON.parse(atob(state));
+            source = stateData.source || null;
             if (stateData.returnUrl) {
               // Only allow redirects to trusted domains
               const allowedDomains = ["itai.gg", "emuy.gg", "pages.dev"];
@@ -631,6 +636,51 @@ export default {
             }
           } catch (e) {
             console.error("Failed to decode state:", e);
+          }
+        }
+        
+        // Auto-register user if coming from events site
+        if (source === 'ironforged-events') {
+          try {
+            // Create event_users table if it doesn't exist
+            await env.EVENT_TRACK_DB.prepare(`
+              CREATE TABLE IF NOT EXISTS event_users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                discord_id TEXT UNIQUE NOT NULL,
+                username TEXT NOT NULL,
+                global_name TEXT,
+                avatar TEXT,
+                first_login_at TEXT DEFAULT (datetime('now')),
+                last_login_at TEXT DEFAULT (datetime('now')),
+                login_count INTEGER DEFAULT 1
+              )
+            `).run();
+            
+            // Try to insert or update user
+            const existingUser = await env.EVENT_TRACK_DB.prepare(
+              `SELECT id FROM event_users WHERE discord_id = ?`
+            ).bind(user.id).first();
+            
+            if (existingUser) {
+              // Update existing user
+              await env.EVENT_TRACK_DB.prepare(`
+                UPDATE event_users 
+                SET username = ?, global_name = ?, avatar = ?, 
+                    last_login_at = datetime('now'), login_count = login_count + 1
+                WHERE discord_id = ?
+              `).bind(user.username, user.global_name, user.avatar, user.id).run();
+              console.log(`Updated event user: ${user.username} (${user.id})`);
+            } else {
+              // Insert new user
+              await env.EVENT_TRACK_DB.prepare(`
+                INSERT INTO event_users (discord_id, username, global_name, avatar)
+                VALUES (?, ?, ?, ?)
+              `).bind(user.id, user.username, user.global_name, user.avatar).run();
+              console.log(`Registered new event user: ${user.username} (${user.id})`);
+            }
+          } catch (regErr) {
+            // Don't block login if registration fails
+            console.error("Failed to auto-register event user:", regErr);
           }
         }
 
