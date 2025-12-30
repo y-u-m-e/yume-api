@@ -2519,6 +2519,7 @@ You don't have permission to view this content. Contact an administrator if you 
         }
         
         // Create submission record
+        // Status tracks OCR verification, but tile unlocks immediately on any submission
         const status = autoApproved ? 'approved' : 'pending';
         await env.EVENT_TRACK_DB.prepare(`
           INSERT INTO tile_submissions (
@@ -2530,26 +2531,25 @@ You don't have permission to view this content. Contact an administrator if you 
           imageKey, imageUrl, status, ocrText, aiConfidence, aiResult
         ).run();
         
-        // If auto-approved, unlock the tile for the user
-        if (autoApproved) {
-          unlockedTiles.push(tile.position);
-          const newCurrentTile = Math.max(...unlockedTiles, 0);
-          
-          // Check if completed
-          const totalTiles = await env.EVENT_TRACK_DB.prepare(`
-            SELECT COUNT(*) as count FROM tile_event_tiles WHERE event_id = ?
-          `).bind(eventId).first();
-          
-          const completedAt = unlockedTiles.length >= (totalTiles?.count || 0) 
-            ? new Date().toISOString() 
-            : null;
-          
-          await env.EVENT_TRACK_DB.prepare(`
-            UPDATE tile_event_progress 
-            SET tiles_unlocked = ?, current_tile = ?, completed_at = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE event_id = ? AND discord_id = ?
-          `).bind(JSON.stringify(unlockedTiles), newCurrentTile, completedAt, eventId, user.userId).run();
-        }
+        // Always unlock the tile on submission (allows continuous flow)
+        // Admins can review and step users back if submissions are rejected
+        unlockedTiles.push(tile.position);
+        const newCurrentTile = Math.max(...unlockedTiles, 0);
+        
+        // Check if completed
+        const totalTiles = await env.EVENT_TRACK_DB.prepare(`
+          SELECT COUNT(*) as count FROM tile_event_tiles WHERE event_id = ?
+        `).bind(eventId).first();
+        
+        const completedAt = unlockedTiles.length >= (totalTiles?.count || 0) 
+          ? new Date().toISOString() 
+          : null;
+        
+        await env.EVENT_TRACK_DB.prepare(`
+          UPDATE tile_event_progress 
+          SET tiles_unlocked = ?, current_tile = ?, completed_at = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE event_id = ? AND discord_id = ?
+        `).bind(JSON.stringify(unlockedTiles), newCurrentTile, completedAt, eventId, user.userId).run();
         
         return new Response(JSON.stringify({ 
           success: true,
@@ -2557,9 +2557,7 @@ You don't have permission to view this content. Contact an administrator if you 
           status: status,
           auto_approved: autoApproved,
           ai_confidence: aiConfidence,
-          message: autoApproved 
-            ? "Submission approved! Tile unlocked." 
-            : "Submission received. Awaiting admin review."
+          message: "Submission received! Tile unlocked." + (autoApproved ? " (Auto-verified)" : " (Pending review)")
         }), {
           status: 201,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -2742,40 +2740,54 @@ You don't have permission to view this content. Contact an administrator if you 
           WHERE id = ?
         `).bind(status, notes || null, adminUser.userId, submissionId).run();
         
-        // If approved, unlock the tile for the user
-        if (status === 'approved') {
-          const progress = await env.EVENT_TRACK_DB.prepare(`
-            SELECT * FROM tile_event_progress WHERE event_id = ? AND discord_id = ?
-          `).bind(submission.event_id, submission.discord_id).first();
+        // Update user progress based on review decision
+        const progress = await env.EVENT_TRACK_DB.prepare(`
+          SELECT * FROM tile_event_progress WHERE event_id = ? AND discord_id = ?
+        `).bind(submission.event_id, submission.discord_id).first();
+        
+        if (progress) {
+          let unlockedTiles = JSON.parse(progress.tiles_unlocked || '[]');
+          let progressChanged = false;
           
-          if (progress) {
-            const unlockedTiles = JSON.parse(progress.tiles_unlocked || '[]');
-            
+          if (status === 'approved') {
+            // Ensure tile is unlocked (it should already be, but just in case)
             if (!unlockedTiles.includes(submission.tile_position)) {
               unlockedTiles.push(submission.tile_position);
-              const newCurrentTile = Math.max(...unlockedTiles, 0);
-              
-              // Check if completed
-              const totalTiles = await env.EVENT_TRACK_DB.prepare(`
-                SELECT COUNT(*) as count FROM tile_event_tiles WHERE event_id = ?
-              `).bind(submission.event_id).first();
-              
-              const completedAt = unlockedTiles.length >= (totalTiles?.count || 0) 
-                ? new Date().toISOString() 
-                : null;
-              
-              await env.EVENT_TRACK_DB.prepare(`
-                UPDATE tile_event_progress 
-                SET tiles_unlocked = ?, current_tile = ?, completed_at = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE event_id = ? AND discord_id = ?
-              `).bind(JSON.stringify(unlockedTiles), newCurrentTile, completedAt, submission.event_id, submission.discord_id).run();
+              progressChanged = true;
             }
+          } else if (status === 'rejected') {
+            // STEP BACK: Remove the tile from user's progress
+            // Also remove any tiles after this one (they shouldn't have been accessible)
+            const rejectedPosition = submission.tile_position;
+            const originalLength = unlockedTiles.length;
+            unlockedTiles = unlockedTiles.filter(pos => pos < rejectedPosition);
+            progressChanged = unlockedTiles.length !== originalLength;
+          }
+          
+          if (progressChanged) {
+            const newCurrentTile = unlockedTiles.length > 0 ? Math.max(...unlockedTiles) : 0;
+            
+            // Check if still completed
+            const totalTiles = await env.EVENT_TRACK_DB.prepare(`
+              SELECT COUNT(*) as count FROM tile_event_tiles WHERE event_id = ?
+            `).bind(submission.event_id).first();
+            
+            const completedAt = unlockedTiles.length >= (totalTiles?.count || 0) 
+              ? progress.completed_at || new Date().toISOString()
+              : null;
+            
+            await env.EVENT_TRACK_DB.prepare(`
+              UPDATE tile_event_progress 
+              SET tiles_unlocked = ?, current_tile = ?, completed_at = ?, updated_at = CURRENT_TIMESTAMP
+              WHERE event_id = ? AND discord_id = ?
+            `).bind(JSON.stringify(unlockedTiles), newCurrentTile, completedAt, submission.event_id, submission.discord_id).run();
           }
         }
         
+        const stepBackMsg = status === 'rejected' ? ' User stepped back to previous tile.' : '';
         return new Response(JSON.stringify({ 
           success: true,
-          message: `Submission ${status}`
+          message: `Submission ${status}.${stepBackMsg}`
         }), {
           status: 200,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
