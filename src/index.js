@@ -757,13 +757,14 @@ export default {
       const canAccessCruddy = await hasAccess(user.userId, 'cruddy');
       const canAccessDevops = await hasAccess(user.userId, 'devops');
       const canAccessInfographic = await hasAccess(user.userId, 'infographic');
+      const canAccessEvents = await hasAccess(user.userId, 'events');
       
       // Legacy: "authorized" = has access to cruddy panel (backward compatible)
       const isAuthorized = canAccessCruddy;
       const isAdmin = perms.isAdmin || ADMIN_USER_IDS.includes(user.userId);
       
       console.log("User ID:", user.userId);
-      console.log("Access - Admin:", isAdmin, "Docs:", canAccessDocs, "Cruddy:", canAccessCruddy);
+      console.log("Access - Admin:", isAdmin, "Docs:", canAccessDocs, "Cruddy:", canAccessCruddy, "Events:", canAccessEvents);
       
       // Update last login time in D1 (fire and forget)
       if (perms.found) {
@@ -782,7 +783,8 @@ export default {
           docs: canAccessDocs,
           cruddy: canAccessCruddy,
           devops: canAccessDevops,
-          infographic: canAccessInfographic
+          infographic: canAccessInfographic,
+          events: canAccessEvents
         },
         user: {
           id: user.userId,
