@@ -3273,6 +3273,84 @@ You don't have permission to view this content. Contact an administrator if you 
       }
     }
 
+    // --- Admin: POST /admin/tile-events/:id/lock - Lock/remove tile(s) from a user (step back) ---
+    if (method === "POST" && url.pathname.match(/^\/admin\/tile-events\/\d+\/lock$/)) {
+      const eventId = parseInt(url.pathname.split('/')[3]);
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !await hasAccess(user.userId, 'events')) {
+        return new Response(JSON.stringify({ error: "Admin access required" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initTileEventTables();
+        const body = await request.json();
+        
+        const targetUserId = sanitizeString(body.discord_id || '', 30);
+        const tilePosition = parseInt(body.tile_position);
+        
+        if (!targetUserId || isNaN(tilePosition)) {
+          return new Response(JSON.stringify({ error: "discord_id and tile_position required" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Get current progress
+        const progress = await env.EVENT_TRACK_DB.prepare(`
+          SELECT * FROM tile_event_progress WHERE event_id = ? AND discord_id = ?
+        `).bind(eventId, targetUserId).first();
+        
+        if (!progress) {
+          return new Response(JSON.stringify({ error: "User not found in this event" }), {
+            status: 404,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Parse and update unlocked tiles - remove the specified tile and all after it
+        let unlockedTiles = JSON.parse(progress.tiles_unlocked || '[]');
+        unlockedTiles = unlockedTiles.filter(pos => pos < tilePosition);
+        
+        // Update current_tile to the highest unlocked (or 0 if none)
+        const newCurrentTile = unlockedTiles.length > 0 ? Math.max(...unlockedTiles) : 0;
+        
+        // Clear completed status if stepping back
+        await env.EVENT_TRACK_DB.prepare(`
+          UPDATE tile_event_progress 
+          SET tiles_unlocked = ?, current_tile = ?, completed_at = NULL, updated_at = CURRENT_TIMESTAMP
+          WHERE event_id = ? AND discord_id = ?
+        `).bind(JSON.stringify(unlockedTiles), newCurrentTile, eventId, targetUserId).run();
+        
+        return new Response(JSON.stringify({ 
+          success: true, 
+          tiles_unlocked: unlockedTiles,
+          current_tile: newCurrentTile,
+          message: `Stepped back to tile ${tilePosition}`
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error locking tile:", err);
+        await logError({
+          endpoint: url.pathname,
+          errorType: "db",
+          errorMessage: err.message,
+          stackTrace: err.stack,
+          userId: user?.userId
+        });
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
     // --- Admin: POST /admin/tile-events/:id/reset-user - Reset a user's progress ---
     if (method === "POST" && url.pathname.match(/^\/admin\/tile-events\/\d+\/reset-user$/)) {
       const eventId = parseInt(url.pathname.split('/')[3]);
