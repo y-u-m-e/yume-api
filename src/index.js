@@ -2780,18 +2780,18 @@ You don't have permission to view this content. Contact an administrator if you 
         // Get submission ID
         const submissionId = (await env.EVENT_TRACK_DB.prepare(`SELECT last_insert_rowid() as id`).first())?.id;
         
-        // Send Discord webhook notification (async, don't wait)
+        // Send Discord webhook notification (use waitUntil to ensure it completes)
         // Pass imageKey (not imageUrl) so we can construct the public R2 URL
-        sendSubmissionWebhook(event, tile, user, { status, ocr_text: ocrText, ai_confidence: aiConfidence }, imageKey);
+        ctx.waitUntil(sendSubmissionWebhook(event, tile, user, { status, ocr_text: ocrText, ai_confidence: aiConfidence }, imageKey));
         
-        // Log activity
-        logActivity(user.userId, user.username, 'tile_submission', {
+        // Log activity (also use waitUntil)
+        ctx.waitUntil(logActivity(user.userId, user.username, 'tile_submission', {
           event_id: eventId,
           tile_id: tileId,
           tile_title: tile.title,
           status,
           auto_approved: autoApproved
-        });
+        }));
         
         return new Response(JSON.stringify({ 
           success: true,
