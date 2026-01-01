@@ -2205,7 +2205,30 @@ You don't have permission to view this content. Contact an administrator if you 
         
         let template = event.webhook_template || defaultTemplate;
         
-        // Determine OCR status
+        // Determine individual keyword statuses
+        let eventKeywordStatus;
+        if (!submission.has_event_keyword) {
+          eventKeywordStatus = '➖ Not required';
+        } else if (submission.event_keyword_found === null) {
+          eventKeywordStatus = '⚠️ Not checked';
+        } else if (submission.event_keyword_found) {
+          eventKeywordStatus = '✅ Found';
+        } else {
+          eventKeywordStatus = '❌ Not found';
+        }
+        
+        let tileKeywordStatus;
+        if (!submission.has_tile_keywords) {
+          tileKeywordStatus = '➖ Not required';
+        } else if (submission.tile_keyword_found === null) {
+          tileKeywordStatus = '⚠️ Not checked';
+        } else if (submission.tile_keyword_found) {
+          tileKeywordStatus = '✅ Found';
+        } else {
+          tileKeywordStatus = '❌ Not found';
+        }
+        
+        // Determine overall OCR status
         let ocrStatus;
         if (submission.status === 'approved') {
           ocrStatus = '✅ Accepted';
@@ -2214,6 +2237,9 @@ You don't have permission to view this content. Contact an administrator if you 
         } else {
           ocrStatus = '⚠️ Error';
         }
+        
+        // Combined OCR result showing both checks
+        const ocrResult = `Event: ${eventKeywordStatus} | Tile: ${tileKeywordStatus}`;
         
         // Replace placeholders
         const replacements = {
@@ -2229,6 +2255,9 @@ You don't have permission to view this content. Contact an administrator if you 
           '{status}': submission.status === 'approved' ? '✅ Auto-Approved' : '⏳ Pending Review',
           '{status_raw}': submission.status || 'pending',
           '{ocr_status}': ocrStatus,
+          '{ocr_result}': ocrResult,
+          '{event_keyword_status}': eventKeywordStatus,
+          '{tile_keyword_status}': tileKeywordStatus,
           '{image_url}': publicImageUrl || '',
           '{ocr_text}': submission.ocr_text || 'No text detected',
           '{ai_confidence}': submission.ai_confidence?.toString() || 'N/A',
@@ -2726,10 +2755,13 @@ You don't have permission to view this content. Contact an administrator if you 
         // Two-tier verification:
         // 1. Event's required_keyword MUST be found (if set)
         // 2. At least one tile keyword MUST be found (if set)
+        let eventKeywordFound = null; // null = not checked, true = found, false = not found
+        let tileKeywordFound = null;  // null = not checked, true = found, false = not found
+        
         if (ocrText) {
           const ocrLower = ocrText.toLowerCase();
-          let eventKeywordFound = true; // Default to true if no event keyword set
-          let tileKeywordFound = true;  // Default to true if no tile keywords set
+          eventKeywordFound = true; // Default to true if no event keyword set
+          tileKeywordFound = true;  // Default to true if no tile keywords set
           let matchDetails = [];
           
           // Check event's required keyword (mandatory phrase)
@@ -2821,7 +2853,16 @@ You don't have permission to view this content. Contact an administrator if you 
         
         // Send Discord webhook notification (use waitUntil to ensure it completes)
         // Pass imageKey (not imageUrl) so we can construct the public R2 URL
-        ctx.waitUntil(sendSubmissionWebhook(event, tile, user, { status, ocr_text: ocrText, ai_confidence: aiConfidence }, imageKey));
+        // Include keyword match results for webhook placeholders
+        ctx.waitUntil(sendSubmissionWebhook(event, tile, user, { 
+          status, 
+          ocr_text: ocrText, 
+          ai_confidence: aiConfidence,
+          event_keyword_found: eventKeywordFound,
+          tile_keyword_found: tileKeywordFound,
+          has_event_keyword: !!(event.required_keyword && event.required_keyword.trim()),
+          has_tile_keywords: !!(tile.unlock_keywords && tile.unlock_keywords.trim())
+        }, imageKey));
         
         // Log activity (also use waitUntil)
         ctx.waitUntil(logActivity(user.userId, user.username, 'tile_submission', {
