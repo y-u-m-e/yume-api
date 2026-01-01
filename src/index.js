@@ -2161,6 +2161,17 @@ You don't have permission to view this content. Contact an administrator if you 
       }
       
       try {
+        // Look up user's RSN from event_users table
+        let rsn = null;
+        try {
+          const eventUser = await env.EVENT_TRACK_DB.prepare(
+            `SELECT rsn FROM event_users WHERE discord_id = ?`
+          ).bind(user.userId).first();
+          rsn = eventUser?.rsn || null;
+        } catch (e) {
+          console.log('Could not fetch RSN for user:', e.message);
+        }
+        
         // Build the public image URL
         // R2_PUBLIC_URL should be set to your R2 bucket's public URL (e.g., https://pub-xxx.r2.dev)
         // If not set, we'll skip the image in the webhook
@@ -2171,14 +2182,15 @@ You don't have permission to view this content. Contact an administrator if you 
           publicBaseUrl,
           publicImageUrl,
           tileTitle: tile?.title,
-          username: user?.username
+          username: user?.username,
+          rsn
         });
         
         // Default template if none provided
         const defaultTemplate = JSON.stringify({
           embeds: [{
             title: "📸 New Tile Submission",
-            description: "**{username}** submitted proof for **{tile_title}**",
+            description: "**{rsn_or_username}** submitted proof for **{tile_title}**",
             color: submission.status === 'approved' ? 0x22c55e : 0xf59e0b,
             fields: [
               { name: "Event", value: "{event_name}", inline: true },
@@ -2197,6 +2209,8 @@ You don't have permission to view this content. Contact an administrator if you 
         const replacements = {
           '{username}': user.username || 'Unknown',
           '{user_id}': user.userId || '',
+          '{rsn}': rsn || '',
+          '{rsn_or_username}': rsn || user.username || 'Unknown',
           '{event_name}': event.name || 'Unknown Event',
           '{event_id}': event.id?.toString() || '',
           '{tile_title}': tile.title || 'Unknown Tile',
