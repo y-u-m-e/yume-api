@@ -2205,6 +2205,16 @@ You don't have permission to view this content. Contact an administrator if you 
         
         let template = event.webhook_template || defaultTemplate;
         
+        // Determine OCR status
+        let ocrStatus;
+        if (submission.status === 'approved') {
+          ocrStatus = '✅ Accepted';
+        } else if (submission.ocr_text && submission.ocr_text !== 'No text detected') {
+          ocrStatus = '❌ Could not parse';
+        } else {
+          ocrStatus = '⚠️ Error';
+        }
+        
         // Replace placeholders
         const replacements = {
           '{username}': user.username || 'Unknown',
@@ -2218,6 +2228,7 @@ You don't have permission to view this content. Contact an administrator if you 
           '{tile_description}': tile.description || '',
           '{status}': submission.status === 'approved' ? '✅ Auto-Approved' : '⏳ Pending Review',
           '{status_raw}': submission.status || 'pending',
+          '{ocr_status}': ocrStatus,
           '{image_url}': publicImageUrl || '',
           '{ocr_text}': submission.ocr_text || 'No text detected',
           '{ai_confidence}': submission.ai_confidence?.toString() || 'N/A',
