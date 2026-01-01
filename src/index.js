@@ -2582,9 +2582,11 @@ You don't have permission to view this content. Contact an administrator if you 
         const MAX_AI_IMAGE_SIZE = 1024 * 1024; // 1MB
         const canRunAI = imageFile.size <= MAX_AI_IMAGE_SIZE;
         
-        // Generate unique key for R2 storage
+        // Generate unique key for R2 storage with random token for security
+        // The random token makes URLs unguessable even if the bucket is public
         const ext = imageFile.name.split('.').pop() || 'png';
-        const imageKey = `submissions/${eventId}/${user.userId}/${tileId}_${Date.now()}.${ext}`;
+        const randomToken = crypto.randomUUID().replace(/-/g, '').substring(0, 16);
+        const imageKey = `submissions/${eventId}/${randomToken}_${tileId}_${Date.now()}.${ext}`;
         
         // Upload to R2
         const imageBuffer = await imageFile.arrayBuffer();
