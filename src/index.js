@@ -2097,6 +2097,20 @@ You don't have permission to view this content. Contact an administrator if you 
         `).run();
       } catch (e) { /* Column exists */ }
       
+      // Add RSN column to event_users table
+      try {
+        await env.EVENT_TRACK_DB.prepare(`
+          ALTER TABLE event_users ADD COLUMN rsn TEXT
+        `).run();
+      } catch (e) { /* Column exists */ }
+      
+      // Add notes column to event_users table (for admin notes)
+      try {
+        await env.EVENT_TRACK_DB.prepare(`
+          ALTER TABLE event_users ADD COLUMN notes TEXT
+        `).run();
+      } catch (e) { /* Column exists */ }
+      
       // Activity logs table
       await env.EVENT_TRACK_DB.prepare(`
         CREATE TABLE IF NOT EXISTS activity_logs (
@@ -3127,6 +3141,224 @@ You don't have permission to view this content. Contact an administrator if you 
         });
       } catch (err) {
         console.error("Error removing participant:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
+    // ========================================
+    // EVENT USERS MANAGEMENT (Admin)
+    // ========================================
+
+    // --- Admin: GET /admin/event-users - List all event users with RSNs ---
+    if (method === "GET" && url.pathname === "/admin/event-users") {
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !await hasAccess(user.userId, 'events')) {
+        return new Response(JSON.stringify({ error: "Events access required" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initTileEventTables();
+        
+        // Get search/filter params
+        const search = url.searchParams.get('search') || '';
+        const hasRsn = url.searchParams.get('has_rsn'); // 'true', 'false', or null for all
+        
+        let query = `SELECT * FROM event_users WHERE 1=1`;
+        const params = [];
+        
+        if (search) {
+          query += ` AND (username LIKE ? OR global_name LIKE ? OR rsn LIKE ? OR discord_id LIKE ?)`;
+          const searchPattern = `%${search}%`;
+          params.push(searchPattern, searchPattern, searchPattern, searchPattern);
+        }
+        
+        if (hasRsn === 'true') {
+          query += ` AND rsn IS NOT NULL AND rsn != ''`;
+        } else if (hasRsn === 'false') {
+          query += ` AND (rsn IS NULL OR rsn = '')`;
+        }
+        
+        query += ` ORDER BY last_login_at DESC`;
+        
+        const result = await env.EVENT_TRACK_DB.prepare(query).bind(...params).all();
+        
+        return new Response(JSON.stringify({ 
+          users: result.results || [],
+          total: result.results?.length || 0
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error fetching event users:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
+    // --- Admin: PUT /admin/event-users/:discordId - Update user RSN/notes ---
+    if (method === "PUT" && url.pathname.match(/^\/admin\/event-users\/\d+$/)) {
+      const discordId = url.pathname.split('/')[3];
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !await hasAccess(user.userId, 'events')) {
+        return new Response(JSON.stringify({ error: "Events access required" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initTileEventTables();
+        const body = await request.json();
+        
+        const rsn = body.rsn !== undefined ? sanitizeString(body.rsn || '', 50) : undefined;
+        const notes = body.notes !== undefined ? sanitizeString(body.notes || '', 500) : undefined;
+        
+        // Build dynamic update query
+        const updates = [];
+        const params = [];
+        
+        if (rsn !== undefined) {
+          updates.push('rsn = ?');
+          params.push(rsn || null);
+        }
+        if (notes !== undefined) {
+          updates.push('notes = ?');
+          params.push(notes || null);
+        }
+        
+        if (updates.length === 0) {
+          return new Response(JSON.stringify({ error: "No fields to update" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        params.push(discordId);
+        
+        const result = await env.EVENT_TRACK_DB.prepare(`
+          UPDATE event_users SET ${updates.join(', ')} WHERE discord_id = ?
+        `).bind(...params).run();
+        
+        if (result.meta.changes === 0) {
+          return new Response(JSON.stringify({ error: "User not found" }), {
+            status: 404,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error updating event user:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
+    // --- Admin: POST /admin/event-users - Manually add a user ---
+    if (method === "POST" && url.pathname === "/admin/event-users") {
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !await hasAccess(user.userId, 'events')) {
+        return new Response(JSON.stringify({ error: "Events access required" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initTileEventTables();
+        const body = await request.json();
+        
+        const discordId = sanitizeString(body.discord_id || '', 50);
+        const username = sanitizeString(body.username || '', 100);
+        const rsn = sanitizeString(body.rsn || '', 50);
+        const notes = sanitizeString(body.notes || '', 500);
+        
+        if (!discordId) {
+          return new Response(JSON.stringify({ error: "Discord ID is required" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Check if user already exists
+        const existing = await env.EVENT_TRACK_DB.prepare(
+          `SELECT id FROM event_users WHERE discord_id = ?`
+        ).bind(discordId).first();
+        
+        if (existing) {
+          return new Response(JSON.stringify({ error: "User already exists" }), {
+            status: 409,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        await env.EVENT_TRACK_DB.prepare(`
+          INSERT INTO event_users (discord_id, username, rsn, notes)
+          VALUES (?, ?, ?, ?)
+        `).bind(discordId, username || 'Unknown', rsn || null, notes || null).run();
+        
+        return new Response(JSON.stringify({ success: true }), {
+          status: 201,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error adding event user:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
+    // --- Admin: DELETE /admin/event-users/:discordId - Delete a user ---
+    if (method === "DELETE" && url.pathname.match(/^\/admin\/event-users\/\d+$/)) {
+      const discordId = url.pathname.split('/')[3];
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !await hasAccess(user.userId, 'events')) {
+        return new Response(JSON.stringify({ error: "Events access required" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initTileEventTables();
+        
+        const result = await env.EVENT_TRACK_DB.prepare(`
+          DELETE FROM event_users WHERE discord_id = ?
+        `).bind(discordId).run();
+        
+        return new Response(JSON.stringify({ 
+          success: true,
+          deleted: result.meta.changes > 0
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error deleting event user:", err);
         return new Response(JSON.stringify({ error: err.message }), {
           status: 500,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
