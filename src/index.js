@@ -2133,6 +2133,14 @@ You don't have permission to view this content. Contact an administrator if you 
     
     // Helper: Send Discord webhook for submissions
     const sendSubmissionWebhook = async (event, tile, user, submission, imageKey) => {
+      console.log('sendSubmissionWebhook called:', {
+        eventId: event?.id,
+        eventName: event?.name,
+        hasWebhookUrl: !!event?.webhook_url,
+        webhookUrlPreview: event?.webhook_url ? event.webhook_url.substring(0, 60) : 'NOT SET',
+        imageKey
+      });
+      
       if (!event.webhook_url) {
         console.log('Webhook skipped: No webhook_url configured for event', event.id);
         return;
@@ -2145,12 +2153,11 @@ You don't have permission to view this content. Contact an administrator if you 
         const publicBaseUrl = env.R2_PUBLIC_URL;
         const publicImageUrl = publicBaseUrl ? `${publicBaseUrl}/${imageKey}` : null;
         
-        console.log('Sending webhook for submission:', {
-          eventId: event.id,
-          tileId: tile.id,
-          userId: user.userId,
-          webhookUrl: event.webhook_url.substring(0, 50) + '...',
-          hasPublicUrl: !!publicImageUrl
+        console.log('Building webhook payload:', {
+          publicBaseUrl,
+          publicImageUrl,
+          tileTitle: tile?.title,
+          username: user?.username
         });
         
         // Default template if none provided
@@ -4188,22 +4195,23 @@ You don't have permission to view this content. Contact an administrator if you 
     // ========================================
     
     /**
-     * GET /r2/submissions/:eventId/:userId/:filename - Serve submission images securely from R2
+     * GET /r2/submissions/:eventId/:filename - Serve submission images securely from R2
      * 
      * Security Features:
      * - Requires authentication (logged-in user)
-     * - Users can only view their own submissions OR admins can view all
+     * - URL contains random token making it unguessable
      * - Adds cache headers for performance
      * 
-     * URL Pattern: /r2/submissions/{eventId}/{userId}/{tileId}_{timestamp}.{ext}
-     * Example: /r2/submissions/1/166201366228762624/5_1718457600000.png
+     * URL Pattern: /r2/submissions/{eventId}/{randomToken}_{tileId}_{timestamp}.{ext}
+     * Example: /r2/submissions/1/a3f8b2c9d1e4f567_5_1718457600000.png
      */
     if (method === "GET" && url.pathname.startsWith("/r2/submissions/")) {
       // Extract the image key from the URL path (everything after /r2/)
       const imageKey = url.pathname.replace("/r2/", "");
       
-      // Validate image key format: submissions/{eventId}/{userId}/{tileId}_{timestamp}.{ext}
-      const keyMatch = imageKey.match(/^submissions\/(\d+)\/(\d+)\/(\d+)_\d+\.(png|jpg|jpeg|gif|webp)$/i);
+      // Validate image key format: submissions/{eventId}/{randomToken}_{tileId}_{timestamp}.{ext}
+      // randomToken is 16 hex chars, tileId and timestamp are digits
+      const keyMatch = imageKey.match(/^submissions\/(\d+)\/([a-f0-9]{16})_(\d+)_\d+\.(png|jpg|jpeg|gif|webp)$/i);
       if (!keyMatch) {
         return new Response(JSON.stringify({ error: "Invalid image path", path: imageKey }), {
           status: 400,
@@ -4211,7 +4219,7 @@ You don't have permission to view this content. Contact an administrator if you 
         });
       }
       
-      const [, eventId, imageOwnerId] = keyMatch;
+      const [, eventId] = keyMatch;
       
       // Check authentication
       const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
@@ -4224,18 +4232,8 @@ You don't have permission to view this content. Contact an administrator if you 
         });
       }
       
-      // Authorization check: user can view their own images OR admins/events managers can view all
-      const isOwner = user.userId === imageOwnerId;
-      const isAdminOrEvents = ADMIN_USER_IDS.includes(user.userId) || 
-                              await hasAccess(user.userId, 'admin') || 
-                              await hasAccess(user.userId, 'events');
-      
-      if (!isOwner && !isAdminOrEvents) {
-        return new Response(JSON.stringify({ error: "Access denied" }), {
-          status: 403,
-          headers: { ...corsHeaders, "Content-Type": "application/json" }
-        });
-      }
+      // Authorization: any authenticated user can view (URLs are unguessable due to random token)
+      // For additional security, we could check if user is participant in the event
       
       try {
         // Fetch the image from R2
