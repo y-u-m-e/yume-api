@@ -684,6 +684,23 @@ export default {
           }
         }
 
+        // Log user login activity
+        try {
+          await env.EVENT_TRACK_DB.prepare(`
+            INSERT INTO activity_logs (discord_id, discord_username, action, details, ip_address, user_agent)
+            VALUES (?, ?, ?, ?, ?, ?)
+          `).bind(
+            user.id,
+            user.username,
+            'user_login',
+            JSON.stringify({ return_url: returnUrl, source }),
+            request.headers.get('CF-Connecting-IP'),
+            request.headers.get('User-Agent')?.substring(0, 255)
+          ).run();
+        } catch (logErr) {
+          console.error('Failed to log login activity:', logErr);
+        }
+        
         // Redirect back to the app with cookie set
         // Use SameSite=None for cross-site cookies
         const cookieOptions = `yume_auth=${sessionToken}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=${7 * 24 * 60 * 60}`;
@@ -1018,6 +1035,77 @@ export default {
         `).bind(discordId).run();
         
         return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+    
+    // GET /admin/activity-logs - Get recent activity logs
+    if (method === "GET" && url.pathname === "/admin/activity-logs") {
+      const token = getTokenFromCookie(request);
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!await isAdmin(user)) {
+        return new Response(JSON.stringify({ error: "Not authorized" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        // Ensure table exists
+        await env.EVENT_TRACK_DB.prepare(`
+          CREATE TABLE IF NOT EXISTS activity_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            discord_id TEXT,
+            discord_username TEXT,
+            action TEXT NOT NULL,
+            details TEXT,
+            ip_address TEXT,
+            user_agent TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+          )
+        `).run();
+        
+        const limit = parseInt(url.searchParams.get('limit') || '100');
+        const offset = parseInt(url.searchParams.get('offset') || '0');
+        const action = url.searchParams.get('action'); // Filter by action type
+        
+        let query = `
+          SELECT al.*, au.global_name, au.avatar 
+          FROM activity_logs al
+          LEFT JOIN admin_users au ON al.discord_id = au.discord_id
+        `;
+        const bindings = [];
+        
+        if (action) {
+          query += ` WHERE al.action = ?`;
+          bindings.push(action);
+        }
+        
+        query += ` ORDER BY al.created_at DESC LIMIT ? OFFSET ?`;
+        bindings.push(limit, offset);
+        
+        const logs = await env.EVENT_TRACK_DB.prepare(query).bind(...bindings).all();
+        
+        // Get action type counts
+        const counts = await env.EVENT_TRACK_DB.prepare(`
+          SELECT action, COUNT(*) as count 
+          FROM activity_logs 
+          GROUP BY action 
+          ORDER BY count DESC
+        `).all();
+        
+        return new Response(JSON.stringify({ 
+          logs: logs.results || [],
+          action_counts: counts.results || []
+        }), {
           status: 200,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
         });
@@ -1995,6 +2083,133 @@ You don't have permission to view this content. Contact an administrator if you 
       } catch (e) {
         // Column already exists, ignore
       }
+      
+      // Add webhook columns for Discord notifications
+      try {
+        await env.EVENT_TRACK_DB.prepare(`
+          ALTER TABLE tile_events ADD COLUMN webhook_url TEXT
+        `).run();
+      } catch (e) { /* Column exists */ }
+      
+      try {
+        await env.EVENT_TRACK_DB.prepare(`
+          ALTER TABLE tile_events ADD COLUMN webhook_template TEXT
+        `).run();
+      } catch (e) { /* Column exists */ }
+      
+      // Activity logs table
+      await env.EVENT_TRACK_DB.prepare(`
+        CREATE TABLE IF NOT EXISTS activity_logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          discord_id TEXT,
+          discord_username TEXT,
+          action TEXT NOT NULL,
+          details TEXT,
+          ip_address TEXT,
+          user_agent TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+      `).run();
+    };
+    
+    // Helper: Log user activity
+    const logActivity = async (discordId, username, action, details = null) => {
+      try {
+        await env.EVENT_TRACK_DB.prepare(`
+          INSERT INTO activity_logs (discord_id, discord_username, action, details, ip_address, user_agent)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).bind(
+          discordId,
+          username,
+          action,
+          details ? JSON.stringify(details) : null,
+          request.headers.get('CF-Connecting-IP'),
+          request.headers.get('User-Agent')?.substring(0, 255)
+        ).run();
+      } catch (e) {
+        console.error('Failed to log activity:', e);
+      }
+    };
+    
+    // Helper: Send Discord webhook for submissions
+    const sendSubmissionWebhook = async (event, tile, user, submission, imageKey) => {
+      if (!event.webhook_url) {
+        console.log('Webhook skipped: No webhook_url configured for event', event.id);
+        return;
+      }
+      
+      try {
+        // Build the public image URL
+        // R2_PUBLIC_URL should be set to your R2 bucket's public URL (e.g., https://pub-xxx.r2.dev)
+        // If not set, we'll skip the image in the webhook
+        const publicBaseUrl = env.R2_PUBLIC_URL;
+        const publicImageUrl = publicBaseUrl ? `${publicBaseUrl}/${imageKey}` : null;
+        
+        console.log('Sending webhook for submission:', {
+          eventId: event.id,
+          tileId: tile.id,
+          userId: user.userId,
+          webhookUrl: event.webhook_url.substring(0, 50) + '...',
+          hasPublicUrl: !!publicImageUrl
+        });
+        
+        // Default template if none provided
+        const defaultTemplate = JSON.stringify({
+          embeds: [{
+            title: "📸 New Tile Submission",
+            description: "**{username}** submitted proof for **{tile_title}**",
+            color: submission.status === 'approved' ? 0x22c55e : 0xf59e0b,
+            fields: [
+              { name: "Event", value: "{event_name}", inline: true },
+              { name: "Tile", value: "{tile_title} (#{tile_position})", inline: true },
+              { name: "Status", value: "{status}", inline: true }
+            ],
+            image: publicImageUrl ? { url: "{image_url}" } : undefined,
+            footer: { text: "Submitted at {timestamp}" },
+            timestamp: "{iso_timestamp}"
+          }]
+        });
+        
+        let template = event.webhook_template || defaultTemplate;
+        
+        // Replace placeholders
+        const replacements = {
+          '{username}': user.username || 'Unknown',
+          '{user_id}': user.userId || '',
+          '{event_name}': event.name || 'Unknown Event',
+          '{event_id}': event.id?.toString() || '',
+          '{tile_title}': tile.title || 'Unknown Tile',
+          '{tile_position}': tile.position?.toString() || '',
+          '{tile_description}': tile.description || '',
+          '{status}': submission.status === 'approved' ? '✅ Auto-Approved' : '⏳ Pending Review',
+          '{status_raw}': submission.status || 'pending',
+          '{image_url}': publicImageUrl || '',
+          '{ocr_text}': submission.ocr_text || 'No text detected',
+          '{ai_confidence}': submission.ai_confidence?.toString() || 'N/A',
+          '{timestamp}': new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }),
+          '{iso_timestamp}': new Date().toISOString()
+        };
+        
+        for (const [key, value] of Object.entries(replacements)) {
+          template = template.split(key).join(value);
+        }
+        
+        const payload = JSON.parse(template);
+        
+        const response = await fetch(event.webhook_url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        
+        if (!response.ok) {
+          console.error('Webhook failed:', response.status, await response.text());
+        } else {
+          console.log('Webhook sent successfully for submission');
+        }
+      } catch (e) {
+        console.error('Failed to send webhook:', e.message);
+      }
     };
 
     // --- GET /tile-events - List all tile events ---
@@ -2553,9 +2768,25 @@ You don't have permission to view this content. Contact an administrator if you 
           WHERE event_id = ? AND discord_id = ?
         `).bind(JSON.stringify(unlockedTiles), newCurrentTile, completedAt, eventId, user.userId).run();
         
+        // Get submission ID
+        const submissionId = (await env.EVENT_TRACK_DB.prepare(`SELECT last_insert_rowid() as id`).first())?.id;
+        
+        // Send Discord webhook notification (async, don't wait)
+        // Pass imageKey (not imageUrl) so we can construct the public R2 URL
+        sendSubmissionWebhook(event, tile, user, { status, ocr_text: ocrText, ai_confidence: aiConfidence }, imageKey);
+        
+        // Log activity
+        logActivity(user.userId, user.username, 'tile_submission', {
+          event_id: eventId,
+          tile_id: tileId,
+          tile_title: tile.title,
+          status,
+          auto_approved: autoApproved
+        });
+        
         return new Response(JSON.stringify({ 
           success: true,
-          submission_id: (await env.EVENT_TRACK_DB.prepare(`SELECT last_insert_rowid() as id`).first())?.id,
+          submission_id: submissionId,
           status: status,
           auto_approved: autoApproved,
           ai_confidence: aiConfidence,
@@ -2924,6 +3155,8 @@ You don't have permission to view this content. Contact an administrator if you 
         const googleSheetId = sanitizeString(body.google_sheet_id || '', 100);
         const googleSheetTab = sanitizeString(body.google_sheet_tab || '', 100);
         const requiredKeyword = sanitizeString(body.required_keyword || '', 200);
+        const webhookUrl = sanitizeString(body.webhook_url || '', 500);
+        const webhookTemplate = body.webhook_template || null; // Allow longer JSON template
         
         if (!name) {
           return new Response(JSON.stringify({ error: "Name is required" }), {
@@ -2933,9 +3166,9 @@ You don't have permission to view this content. Contact an administrator if you 
         }
         
         const result = await env.EVENT_TRACK_DB.prepare(`
-          INSERT INTO tile_events (name, description, google_sheet_id, google_sheet_tab, created_by, required_keyword)
-          VALUES (?, ?, ?, ?, ?, ?)
-        `).bind(name, description, googleSheetId, googleSheetTab, user.userId, requiredKeyword).run();
+          INSERT INTO tile_events (name, description, google_sheet_id, google_sheet_tab, created_by, required_keyword, webhook_url, webhook_template)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(name, description, googleSheetId, googleSheetTab, user.userId, requiredKeyword, webhookUrl, webhookTemplate).run();
         
         return new Response(JSON.stringify({ 
           success: true, 
@@ -2983,12 +3216,14 @@ You don't have permission to view this content. Contact an administrator if you 
         const googleSheetId = sanitizeString(body.google_sheet_id || '', 100);
         const googleSheetTab = sanitizeString(body.google_sheet_tab || '', 100);
         const requiredKeyword = sanitizeString(body.required_keyword || '', 200);
+        const webhookUrl = sanitizeString(body.webhook_url || '', 500);
+        const webhookTemplate = body.webhook_template || null;
         
         await env.EVENT_TRACK_DB.prepare(`
           UPDATE tile_events 
-          SET name = ?, description = ?, is_active = ?, google_sheet_id = ?, google_sheet_tab = ?, required_keyword = ?, updated_at = CURRENT_TIMESTAMP
+          SET name = ?, description = ?, is_active = ?, google_sheet_id = ?, google_sheet_tab = ?, required_keyword = ?, webhook_url = ?, webhook_template = ?, updated_at = CURRENT_TIMESTAMP
           WHERE id = ?
-        `).bind(name, description, isActive, googleSheetId, googleSheetTab, requiredKeyword, eventId).run();
+        `).bind(name, description, isActive, googleSheetId, googleSheetTab, requiredKeyword, webhookUrl, webhookTemplate, eventId).run();
         
         return new Response(JSON.stringify({ success: true }), {
           status: 200,
