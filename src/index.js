@@ -1960,6 +1960,60 @@ You don't have permission to view this content. Contact an administrator if you 
       }
     }
     
+    // --- PUT /attendance/hosts/rename - Bulk rename a host across all records ---
+    if (method === "PUT" && url.pathname === "/attendance/hosts/rename") {
+      // Check authentication and access
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !(await hasAccess(user.userId, 'cruddy'))) {
+        return new Response(JSON.stringify({ error: "Cruddy access required" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        const body = await request.json();
+        const oldHost = sanitizeString(body.old_host, 100);
+        const newHost = sanitizeString(body.new_host, 100);
+        
+        if (!oldHost) {
+          return new Response(JSON.stringify({ error: "old_host is required" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Ensure host column exists (migration)
+        try {
+          await env.EVENT_TRACK_DB.prepare("ALTER TABLE attendance ADD COLUMN host TEXT").run();
+        } catch (e) {
+          // Column already exists - ignore
+        }
+        
+        // Rename all occurrences of this host name
+        const result = await env.EVENT_TRACK_DB
+          .prepare("UPDATE attendance SET host = ? WHERE host = ?")
+          .bind(newHost, oldHost)
+          .run();
+        
+        return new Response(JSON.stringify({ 
+          success: true, 
+          updated: result.meta.changes 
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Rename host error:", err);
+        return new Response(JSON.stringify({ error: "Failed to rename host" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+    
     // --- PUT: Set Event Host ---
     // Sets/updates the host for all records matching an event+date combination
     if (method === "PUT" && url.pathname === "/attendance/events/host") {
