@@ -1692,6 +1692,7 @@ You don't have permission to view this content. Contact an administrator if you 
         try {
           const name = sanitizeString(url.searchParams.get("name") || "", 100);
           const event = sanitizeString(url.searchParams.get("event") || "", 200);
+          const host = sanitizeString(url.searchParams.get("host") || "", 100);
           const start = url.searchParams.get("start") || "";
           const end = url.searchParams.get("end") || "";
           const page = Math.max(1, parseInt(url.searchParams.get("page")) || 1);
@@ -1716,6 +1717,10 @@ You don't have permission to view this content. Contact an administrator if you 
           if (event) {
             whereConditions.push("event LIKE ? ESCAPE '\\'");
             bindings.push(`%${escapeLike(event)}%`);
+          }
+          if (host) {
+            whereConditions.push("host LIKE ? ESCAPE '\\'");
+            bindings.push(`%${escapeLike(host)}%`);
           }
           if (start && end) {
             whereConditions.push("date BETWEEN ? AND ?");
