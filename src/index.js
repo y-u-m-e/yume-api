@@ -1729,8 +1729,15 @@ You don't have permission to view this content. Contact an administrator if you 
           const countResult = await env.EVENT_TRACK_DB.prepare(countQuery).bind(...bindings).first();
           const total = countResult?.total || 0;
 
+          // Ensure host column exists (migration)
+          try {
+            await env.EVENT_TRACK_DB.prepare("ALTER TABLE attendance ADD COLUMN host TEXT DEFAULT ''").run();
+          } catch (e) {
+            // Column already exists, ignore
+          }
+          
           // Get paginated results
-          const dataQuery = `SELECT id, name, event, date FROM attendance ${whereClause} ORDER BY date DESC, id DESC LIMIT ? OFFSET ?`;
+          const dataQuery = `SELECT id, name, event, date, COALESCE(host, '') as host FROM attendance ${whereClause} ORDER BY date DESC, id DESC LIMIT ? OFFSET ?`;
           const results = await env.EVENT_TRACK_DB.prepare(dataQuery).bind(...bindings, limit, offset).all();
 
           return new Response(JSON.stringify({ results: results.results, total, page, limit }), {
@@ -1760,6 +1767,7 @@ You don't have permission to view this content. Contact an administrator if you 
           const name = sanitizeString(body.name, 100);
           const event = sanitizeString(body.event, 200);
           const date = body.date;
+          const host = sanitizeString(body.host || '', 100);
 
           if (!name || !event || !date) {
             return new Response(JSON.stringify({ error: "name, event, and date are required" }), {
@@ -1776,8 +1784,8 @@ You don't have permission to view this content. Contact an administrator if you 
           }
 
           const result = await env.EVENT_TRACK_DB
-            .prepare("INSERT INTO attendance (name, event, date) VALUES (?, ?, ?)")
-            .bind(name, event, date)
+            .prepare("INSERT INTO attendance (name, event, date, host) VALUES (?, ?, ?, ?)")
+            .bind(name, event, date, host)
             .run();
 
           return new Response(JSON.stringify({ success: true, id: result.meta.last_row_id }), {
@@ -1800,6 +1808,7 @@ You don't have permission to view this content. Contact an administrator if you 
           const name = sanitizeString(body.name, 100);
           const event = sanitizeString(body.event, 200);
           const date = body.date;
+          const host = sanitizeString(body.host || '', 100);
 
           if (!name || !event || !date) {
             return new Response(JSON.stringify({ error: "name, event, and date are required" }), {
@@ -1816,8 +1825,8 @@ You don't have permission to view this content. Contact an administrator if you 
           }
 
           const result = await env.EVENT_TRACK_DB
-            .prepare("UPDATE attendance SET name = ?, event = ?, date = ? WHERE id = ?")
-            .bind(name, event, date, recordId)
+            .prepare("UPDATE attendance SET name = ?, event = ?, date = ?, host = ? WHERE id = ?")
+            .bind(name, event, date, host, recordId)
             .run();
 
           if (result.meta.changes === 0) {
@@ -1920,6 +1929,65 @@ You don't have permission to view this content. Contact an administrator if you 
       } catch (err) {
         console.error("Rename event error:", err);
         return new Response(JSON.stringify({ error: "Failed to rename event" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+    
+    // --- PUT: Set Event Host ---
+    // Sets/updates the host for all records matching an event+date combination
+    if (method === "PUT" && url.pathname === "/attendance/events/host") {
+      if (!user) {
+        return new Response(JSON.stringify({ error: "Authentication required" }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      const perms = await getUserPermissions(user.userId);
+      if (!perms.cruddy && !perms.admin) {
+        return new Response(JSON.stringify({ error: "Access denied" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        const body = await request.json();
+        const event = sanitizeString(body.event, 200);
+        const date = body.date;
+        const host = sanitizeString(body.host || '', 100);
+        
+        if (!event || !date) {
+          return new Response(JSON.stringify({ error: "event and date are required" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        if (!isValidDate(date)) {
+          return new Response(JSON.stringify({ error: "Invalid date format. Use YYYY-MM-DD" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        const result = await env.EVENT_TRACK_DB
+          .prepare("UPDATE attendance SET host = ? WHERE event = ? AND date = ?")
+          .bind(host, event, date)
+          .run();
+        
+        return new Response(JSON.stringify({ 
+          success: true, 
+          updated: result.meta.changes 
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Set event host error:", err);
+        return new Response(JSON.stringify({ error: "Failed to set event host" }), {
           status: 500,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
         });
