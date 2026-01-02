@@ -1958,16 +1958,12 @@ You don't have permission to view this content. Contact an administrator if you 
     // --- PUT: Set Event Host ---
     // Sets/updates the host for all records matching an event+date combination
     if (method === "PUT" && url.pathname === "/attendance/events/host") {
-      if (!user) {
-        return new Response(JSON.stringify({ error: "Authentication required" }), {
-          status: 401,
-          headers: { ...corsHeaders, "Content-Type": "application/json" }
-        });
-      }
+      // Check authentication and access
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
+      const user = token ? await verifyToken(token) : null;
       
-      const perms = await getUserPermissions(user.userId);
-      if (!perms.cruddy && !perms.admin) {
-        return new Response(JSON.stringify({ error: "Access denied" }), {
+      if (!user || !(await hasAccess(user.userId, 'cruddy'))) {
+        return new Response(JSON.stringify({ error: "Cruddy access required" }), {
           status: 403,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
         });
