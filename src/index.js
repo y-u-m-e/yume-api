@@ -1869,6 +1869,63 @@ You don't have permission to view this content. Contact an administrator if you 
       }
     }
 
+    // --- PUT /attendance/events/rename - Bulk rename an event ---
+    if (method === "PUT" && url.pathname === "/attendance/events/rename") {
+      // Check authentication and access
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !(await hasAccess(user.userId, 'cruddy'))) {
+        return new Response(JSON.stringify({ error: "Cruddy access required" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        const body = await request.json();
+        const oldEvent = sanitizeString(body.old_event, 200);
+        const newEvent = sanitizeString(body.new_event, 200);
+        const date = body.date || null; // Optional: only rename for specific date
+        
+        if (!oldEvent || !newEvent) {
+          return new Response(JSON.stringify({ error: "old_event and new_event are required" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        let result;
+        if (date) {
+          // Rename only for specific event+date combination
+          result = await env.EVENT_TRACK_DB
+            .prepare("UPDATE attendance SET event = ? WHERE event = ? AND date = ?")
+            .bind(newEvent, oldEvent, date)
+            .run();
+        } else {
+          // Rename all occurrences of this event name
+          result = await env.EVENT_TRACK_DB
+            .prepare("UPDATE attendance SET event = ? WHERE event = ?")
+            .bind(newEvent, oldEvent)
+            .run();
+        }
+        
+        return new Response(JSON.stringify({ 
+          success: true, 
+          updated: result.meta.changes 
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Rename event error:", err);
+        return new Response(JSON.stringify({ error: "Failed to rename event" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
     // --- GET: Analytics Queries ---
     if (method === "GET" && url.pathname === "/attendance") {
       const name = sanitizeString(url.searchParams.get("name") || "", 100);
