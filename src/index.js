@@ -1729,18 +1729,24 @@ You don't have permission to view this content. Contact an administrator if you 
           const countResult = await env.EVENT_TRACK_DB.prepare(countQuery).bind(...bindings).first();
           const total = countResult?.total || 0;
 
-          // Ensure host column exists (migration)
+          // Try to add host column if it doesn't exist (one-time migration)
           try {
-            await env.EVENT_TRACK_DB.prepare("ALTER TABLE attendance ADD COLUMN host TEXT DEFAULT ''").run();
+            await env.EVENT_TRACK_DB.prepare("ALTER TABLE attendance ADD COLUMN host TEXT").run();
           } catch (e) {
-            // Column already exists, ignore
+            // Column already exists or other error - ignore
           }
-          
-          // Get paginated results
-          const dataQuery = `SELECT id, name, event, date, COALESCE(host, '') as host FROM attendance ${whereClause} ORDER BY date DESC, id DESC LIMIT ? OFFSET ?`;
-          const results = await env.EVENT_TRACK_DB.prepare(dataQuery).bind(...bindings, limit, offset).all();
 
-          return new Response(JSON.stringify({ results: results.results, total, page, limit }), {
+          // Get paginated results
+          const dataQuery = `SELECT id, name, event, date, host FROM attendance ${whereClause} ORDER BY date DESC, id DESC LIMIT ? OFFSET ?`;
+          const results = await env.EVENT_TRACK_DB.prepare(dataQuery).bind(...bindings, limit, offset).all();
+          
+          // Ensure host field exists in results (normalize nulls to empty string)
+          const normalizedResults = (results.results || []).map(r => ({
+            ...r,
+            host: r.host || ''
+          }));
+
+          return new Response(JSON.stringify({ results: normalizedResults, total, page, limit }), {
             status: 200,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
@@ -1783,6 +1789,13 @@ You don't have permission to view this content. Contact an administrator if you 
             });
           }
 
+          // Ensure host column exists (migration)
+          try {
+            await env.EVENT_TRACK_DB.prepare("ALTER TABLE attendance ADD COLUMN host TEXT").run();
+          } catch (e) {
+            // Column already exists - ignore
+          }
+
           const result = await env.EVENT_TRACK_DB
             .prepare("INSERT INTO attendance (name, event, date, host) VALUES (?, ?, ?, ?)")
             .bind(name, event, date, host)
@@ -1822,6 +1835,13 @@ You don't have permission to view this content. Contact an administrator if you 
               status: 400,
               headers: { ...corsHeaders, "Content-Type": "application/json" }
             });
+          }
+
+          // Ensure host column exists (migration)
+          try {
+            await env.EVENT_TRACK_DB.prepare("ALTER TABLE attendance ADD COLUMN host TEXT").run();
+          } catch (e) {
+            // Column already exists - ignore
           }
 
           const result = await env.EVENT_TRACK_DB
@@ -1971,6 +1991,13 @@ You don't have permission to view this content. Contact an administrator if you 
             status: 400,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
+        }
+        
+        // Ensure host column exists (migration)
+        try {
+          await env.EVENT_TRACK_DB.prepare("ALTER TABLE attendance ADD COLUMN host TEXT").run();
+        } catch (e) {
+          // Column already exists - ignore
         }
         
         const result = await env.EVENT_TRACK_DB
