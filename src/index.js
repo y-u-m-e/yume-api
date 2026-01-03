@@ -1527,10 +1527,7 @@ export default {
         const body = await request.json();
         const displayName = sanitizeString(body.display_name || "", 100);
         
-        console.log('Updating sesh author:', { discordId, displayName });
-        
         if (!displayName) {
-          console.log('Update failed: empty display name');
           return new Response(JSON.stringify({ error: "display_name is required" }), {
             status: 400,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -1545,10 +1542,7 @@ export default {
           WHERE discord_id = ?
         `).bind(displayName, discordId).run();
         
-        console.log('Update result:', { changes: result.changes, meta: result.meta });
-        
         if (result.changes === 0) {
-          console.log('Update failed: no rows changed, author not found');
           return new Response(JSON.stringify({ error: "Author not found" }), {
             status: 404,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -1558,7 +1552,6 @@ export default {
         // Log the action
         await logActivity(user.userId, user.username, "sesh_author_update", `Updated author mapping: ${discordId} -> ${displayName}`);
         
-        console.log('Update successful');
         return new Response(JSON.stringify({ 
           success: true,
           message: "Author mapping updated"
@@ -1567,7 +1560,7 @@ export default {
           headers: { ...corsHeaders, "Content-Type": "application/json" }
         });
       } catch (err) {
-        console.error('Update error:', err.message, err.stack);
+        console.error('Update error:', err.message);
         return new Response(JSON.stringify({ error: "Failed to update author mapping" }), {
           status: 500,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
