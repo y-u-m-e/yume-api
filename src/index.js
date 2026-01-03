@@ -1336,6 +1336,372 @@ export default {
       }
     }
 
+    // ==========================================================================
+    // SESH AUTHOR MAP MANAGEMENT
+    // ==========================================================================
+    // Maps Discord user IDs to display names for calendar events
+    
+    /**
+     * Initialize the sesh_author_map table
+     */
+    const initSeshAuthorMapTable = async () => {
+      await env.EVENT_TRACK_DB.prepare(`
+        CREATE TABLE IF NOT EXISTS sesh_author_map (
+          discord_id TEXT PRIMARY KEY,
+          display_name TEXT NOT NULL,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+      `).run();
+    };
+    
+    // GET /sesh-author-map - Public endpoint for workers to fetch the author map
+    if (method === "GET" && url.pathname === "/sesh-author-map") {
+      try {
+        await initSeshAuthorMapTable();
+        
+        const result = await env.EVENT_TRACK_DB.prepare(`
+          SELECT discord_id, display_name FROM sesh_author_map ORDER BY display_name
+        `).all();
+        
+        // Convert to object format for easy lookup
+        const authorMap = {};
+        for (const row of result.results || []) {
+          authorMap[row.discord_id] = row.display_name;
+        }
+        
+        return new Response(JSON.stringify({ 
+          authors: authorMap,
+          count: Object.keys(authorMap).length
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: "Failed to fetch author map" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+    
+    // GET /admin/sesh-author-map - Admin endpoint to list all authors
+    if (method === "GET" && url.pathname === "/admin/sesh-author-map") {
+      const token = getTokenFromCookie(request);
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !ADMIN_USER_IDS.includes(user.userId)) {
+        return new Response(JSON.stringify({ error: "Not authorized" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initSeshAuthorMapTable();
+        
+        const result = await env.EVENT_TRACK_DB.prepare(`
+          SELECT discord_id, display_name, created_at, updated_at 
+          FROM sesh_author_map 
+          ORDER BY display_name
+        `).all();
+        
+        return new Response(JSON.stringify({ 
+          authors: result.results || [],
+          count: result.results?.length || 0
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: "Failed to fetch author map" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+    
+    // POST /admin/sesh-author-map - Add a new author mapping
+    if (method === "POST" && url.pathname === "/admin/sesh-author-map") {
+      const token = getTokenFromCookie(request);
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !ADMIN_USER_IDS.includes(user.userId)) {
+        return new Response(JSON.stringify({ error: "Not authorized" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        const body = await request.json();
+        const discordId = sanitizeString(body.discord_id || "", 30);
+        const displayName = sanitizeString(body.display_name || "", 100);
+        
+        if (!discordId || !displayName) {
+          return new Response(JSON.stringify({ error: "discord_id and display_name are required" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Validate Discord ID format (should be numeric)
+        if (!/^\d+$/.test(discordId)) {
+          return new Response(JSON.stringify({ error: "discord_id must be a valid Discord snowflake (numeric)" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        await initSeshAuthorMapTable();
+        
+        await env.EVENT_TRACK_DB.prepare(`
+          INSERT INTO sesh_author_map (discord_id, display_name)
+          VALUES (?, ?)
+        `).bind(discordId, displayName).run();
+        
+        // Log the action
+        await logActivity({
+          discordId: user.userId,
+          discordUsername: user.username,
+          action: "sesh_author_add",
+          details: `Added author mapping: ${discordId} -> ${displayName}`
+        });
+        
+        return new Response(JSON.stringify({ 
+          success: true,
+          message: "Author mapping added",
+          author: { discord_id: discordId, display_name: displayName }
+        }), {
+          status: 201,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        if (err.message?.includes("UNIQUE constraint")) {
+          return new Response(JSON.stringify({ error: "This Discord ID already exists" }), {
+            status: 409,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        return new Response(JSON.stringify({ error: "Failed to add author mapping" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+    
+    // PUT /admin/sesh-author-map/:discord_id - Update an author mapping
+    const updateAuthorMatch = url.pathname.match(/^\/admin\/sesh-author-map\/(\d+)$/);
+    if (method === "PUT" && updateAuthorMatch) {
+      const token = getTokenFromCookie(request);
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !ADMIN_USER_IDS.includes(user.userId)) {
+        return new Response(JSON.stringify({ error: "Not authorized" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      const discordId = updateAuthorMatch[1];
+      
+      try {
+        const body = await request.json();
+        const displayName = sanitizeString(body.display_name || "", 100);
+        
+        if (!displayName) {
+          return new Response(JSON.stringify({ error: "display_name is required" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        await initSeshAuthorMapTable();
+        
+        const result = await env.EVENT_TRACK_DB.prepare(`
+          UPDATE sesh_author_map 
+          SET display_name = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE discord_id = ?
+        `).bind(displayName, discordId).run();
+        
+        if (result.changes === 0) {
+          return new Response(JSON.stringify({ error: "Author not found" }), {
+            status: 404,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Log the action
+        await logActivity({
+          discordId: user.userId,
+          discordUsername: user.username,
+          action: "sesh_author_update",
+          details: `Updated author mapping: ${discordId} -> ${displayName}`
+        });
+        
+        return new Response(JSON.stringify({ 
+          success: true,
+          message: "Author mapping updated"
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: "Failed to update author mapping" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+    
+    // DELETE /admin/sesh-author-map/:discord_id - Delete an author mapping
+    const deleteAuthorMatch = url.pathname.match(/^\/admin\/sesh-author-map\/(\d+)$/);
+    if (method === "DELETE" && deleteAuthorMatch) {
+      const token = getTokenFromCookie(request);
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !ADMIN_USER_IDS.includes(user.userId)) {
+        return new Response(JSON.stringify({ error: "Not authorized" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      const discordId = deleteAuthorMatch[1];
+      
+      try {
+        await initSeshAuthorMapTable();
+        
+        // Get the author name before deletion for logging
+        const existing = await env.EVENT_TRACK_DB.prepare(`
+          SELECT display_name FROM sesh_author_map WHERE discord_id = ?
+        `).bind(discordId).first();
+        
+        const result = await env.EVENT_TRACK_DB.prepare(`
+          DELETE FROM sesh_author_map WHERE discord_id = ?
+        `).bind(discordId).run();
+        
+        if (result.changes === 0) {
+          return new Response(JSON.stringify({ error: "Author not found" }), {
+            status: 404,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Log the action
+        await logActivity({
+          discordId: user.userId,
+          discordUsername: user.username,
+          action: "sesh_author_delete",
+          details: `Deleted author mapping: ${discordId} (was: ${existing?.display_name || 'unknown'})`
+        });
+        
+        return new Response(JSON.stringify({ 
+          success: true,
+          message: "Author mapping deleted"
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: "Failed to delete author mapping" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+    
+    // POST /admin/sesh-author-map/bulk - Bulk import author mappings
+    if (method === "POST" && url.pathname === "/admin/sesh-author-map/bulk") {
+      const token = getTokenFromCookie(request);
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !ADMIN_USER_IDS.includes(user.userId)) {
+        return new Response(JSON.stringify({ error: "Not authorized" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        const body = await request.json();
+        const authors = body.authors; // Expect object { discord_id: display_name, ... }
+        
+        if (!authors || typeof authors !== 'object') {
+          return new Response(JSON.stringify({ error: "authors object is required" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        await initSeshAuthorMapTable();
+        
+        let added = 0;
+        let updated = 0;
+        let errors = [];
+        
+        for (const [discordId, displayName] of Object.entries(authors)) {
+          if (!/^\d+$/.test(discordId)) {
+            errors.push(`Invalid Discord ID: ${discordId}`);
+            continue;
+          }
+          
+          const cleanName = sanitizeString(String(displayName), 100);
+          if (!cleanName) {
+            errors.push(`Empty display name for: ${discordId}`);
+            continue;
+          }
+          
+          try {
+            // Use INSERT OR REPLACE for upsert
+            const existing = await env.EVENT_TRACK_DB.prepare(`
+              SELECT 1 FROM sesh_author_map WHERE discord_id = ?
+            `).bind(discordId).first();
+            
+            if (existing) {
+              await env.EVENT_TRACK_DB.prepare(`
+                UPDATE sesh_author_map 
+                SET display_name = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE discord_id = ?
+              `).bind(cleanName, discordId).run();
+              updated++;
+            } else {
+              await env.EVENT_TRACK_DB.prepare(`
+                INSERT INTO sesh_author_map (discord_id, display_name)
+                VALUES (?, ?)
+              `).bind(discordId, cleanName).run();
+              added++;
+            }
+          } catch (e) {
+            errors.push(`Failed to process ${discordId}: ${e.message}`);
+          }
+        }
+        
+        // Log the action
+        await logActivity({
+          discordId: user.userId,
+          discordUsername: user.username,
+          action: "sesh_author_bulk_import",
+          details: `Bulk import: ${added} added, ${updated} updated, ${errors.length} errors`
+        });
+        
+        return new Response(JSON.stringify({ 
+          success: true,
+          added,
+          updated,
+          errors: errors.length > 0 ? errors : undefined
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: "Failed to bulk import author mappings" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
     // --- Documentation Site (Public + Protected) ---
     // Some pages are public, others require authentication
     if (method === "GET" && url.pathname.startsWith("/docs")) {
