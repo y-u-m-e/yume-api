@@ -1337,6 +1337,29 @@ export default {
     }
 
     // ==========================================================================
+    // HELPER FUNCTIONS (defined early for use throughout)
+    // ==========================================================================
+    
+    // Helper: Log user activity
+    const logActivity = async (discordId, username, action, details = null) => {
+      try {
+        await env.EVENT_TRACK_DB.prepare(`
+          INSERT INTO activity_logs (discord_id, discord_username, action, details, ip_address, user_agent)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).bind(
+          discordId,
+          username,
+          action,
+          details ? JSON.stringify(details) : null,
+          request.headers.get('CF-Connecting-IP'),
+          request.headers.get('User-Agent')?.substring(0, 255)
+        ).run();
+      } catch (e) {
+        console.error('Failed to log activity:', e);
+      }
+    };
+
+    // ==========================================================================
     // SESH AUTHOR MAP MANAGEMENT
     // ==========================================================================
     // Maps Discord user IDs to display names for calendar events
@@ -1461,12 +1484,7 @@ export default {
         `).bind(discordId, displayName).run();
         
         // Log the action
-        await logActivity({
-          discordId: user.userId,
-          discordUsername: user.username,
-          action: "sesh_author_add",
-          details: `Added author mapping: ${discordId} -> ${displayName}`
-        });
+        await logActivity(user.userId, user.username, "sesh_author_add", `Added author mapping: ${discordId} -> ${displayName}`);
         
         return new Response(JSON.stringify({ 
           success: true,
@@ -1509,7 +1527,10 @@ export default {
         const body = await request.json();
         const displayName = sanitizeString(body.display_name || "", 100);
         
+        console.log('Updating sesh author:', { discordId, displayName });
+        
         if (!displayName) {
+          console.log('Update failed: empty display name');
           return new Response(JSON.stringify({ error: "display_name is required" }), {
             status: 400,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -1524,7 +1545,10 @@ export default {
           WHERE discord_id = ?
         `).bind(displayName, discordId).run();
         
+        console.log('Update result:', { changes: result.changes, meta: result.meta });
+        
         if (result.changes === 0) {
+          console.log('Update failed: no rows changed, author not found');
           return new Response(JSON.stringify({ error: "Author not found" }), {
             status: 404,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -1532,13 +1556,9 @@ export default {
         }
         
         // Log the action
-        await logActivity({
-          discordId: user.userId,
-          discordUsername: user.username,
-          action: "sesh_author_update",
-          details: `Updated author mapping: ${discordId} -> ${displayName}`
-        });
+        await logActivity(user.userId, user.username, "sesh_author_update", `Updated author mapping: ${discordId} -> ${displayName}`);
         
+        console.log('Update successful');
         return new Response(JSON.stringify({ 
           success: true,
           message: "Author mapping updated"
@@ -1547,6 +1567,7 @@ export default {
           headers: { ...corsHeaders, "Content-Type": "application/json" }
         });
       } catch (err) {
+        console.error('Update error:', err.message, err.stack);
         return new Response(JSON.stringify({ error: "Failed to update author mapping" }), {
           status: 500,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -1589,12 +1610,7 @@ export default {
         }
         
         // Log the action
-        await logActivity({
-          discordId: user.userId,
-          discordUsername: user.username,
-          action: "sesh_author_delete",
-          details: `Deleted author mapping: ${discordId} (was: ${existing?.display_name || 'unknown'})`
-        });
+        await logActivity(user.userId, user.username, "sesh_author_delete", `Deleted author mapping: ${discordId} (was: ${existing?.display_name || 'unknown'})`);
         
         return new Response(JSON.stringify({ 
           success: true,
@@ -1678,12 +1694,7 @@ export default {
         }
         
         // Log the action
-        await logActivity({
-          discordId: user.userId,
-          discordUsername: user.username,
-          action: "sesh_author_bulk_import",
-          details: `Bulk import: ${added} added, ${updated} updated, ${errors.length} errors`
-        });
+        await logActivity(user.userId, user.username, "sesh_author_bulk_import", `Bulk import: ${added} added, ${updated} updated, ${errors.length} errors`);
         
         return new Response(JSON.stringify({ 
           success: true,
@@ -2697,25 +2708,6 @@ You don't have permission to view this content. Contact an administrator if you 
           created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
       `).run();
-    };
-    
-    // Helper: Log user activity
-    const logActivity = async (discordId, username, action, details = null) => {
-      try {
-        await env.EVENT_TRACK_DB.prepare(`
-          INSERT INTO activity_logs (discord_id, discord_username, action, details, ip_address, user_agent)
-          VALUES (?, ?, ?, ?, ?, ?)
-        `).bind(
-          discordId,
-          username,
-          action,
-          details ? JSON.stringify(details) : null,
-          request.headers.get('CF-Connecting-IP'),
-          request.headers.get('User-Agent')?.substring(0, 255)
-        ).run();
-      } catch (e) {
-        console.error('Failed to log activity:', e);
-      }
     };
     
     // Helper: Send Discord webhook for submissions
