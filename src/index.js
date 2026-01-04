@@ -901,6 +901,148 @@ export default {
           } catch (e) { /* Column likely exists */ }
         }
         
+        // === RBAC Tables ===
+        // Permissions table - defines what permissions exist
+        await env.EVENT_TRACK_DB.prepare(`
+          CREATE TABLE IF NOT EXISTS rbac_permissions (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT,
+            category TEXT DEFAULT 'general',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+          )
+        `).run();
+        
+        // Roles table - defines role groups
+        await env.EVENT_TRACK_DB.prepare(`
+          CREATE TABLE IF NOT EXISTS rbac_roles (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT,
+            color TEXT DEFAULT '#6b7280',
+            priority INTEGER DEFAULT 0,
+            is_default INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+          )
+        `).run();
+        
+        // Role-Permission mapping
+        await env.EVENT_TRACK_DB.prepare(`
+          CREATE TABLE IF NOT EXISTS rbac_role_permissions (
+            role_id TEXT NOT NULL,
+            permission_id TEXT NOT NULL,
+            PRIMARY KEY (role_id, permission_id),
+            FOREIGN KEY (role_id) REFERENCES rbac_roles(id) ON DELETE CASCADE,
+            FOREIGN KEY (permission_id) REFERENCES rbac_permissions(id) ON DELETE CASCADE
+          )
+        `).run();
+        
+        // User-Role mapping
+        await env.EVENT_TRACK_DB.prepare(`
+          CREATE TABLE IF NOT EXISTS rbac_user_roles (
+            discord_id TEXT NOT NULL,
+            role_id TEXT NOT NULL,
+            granted_by TEXT,
+            granted_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (discord_id, role_id),
+            FOREIGN KEY (role_id) REFERENCES rbac_roles(id) ON DELETE CASCADE
+          )
+        `).run();
+        
+        // Seed default permissions if empty
+        const existingPerms = await env.EVENT_TRACK_DB.prepare('SELECT COUNT(*) as count FROM rbac_permissions').first();
+        if (!existingPerms || existingPerms.count === 0) {
+          const defaultPermissions = [
+            ['view_cruddy', 'View Cruddy Panel', 'Access to attendance tracking panel', 'attendance'],
+            ['edit_cruddy', 'Edit Attendance', 'Add/edit attendance records', 'attendance'],
+            ['delete_cruddy', 'Delete Attendance', 'Delete attendance records', 'attendance'],
+            ['view_docs', 'View Documentation', 'Access to documentation pages', 'docs'],
+            ['view_devops', 'View DevOps', 'Access to DevOps panel', 'devops'],
+            ['trigger_deploy', 'Trigger Deployments', 'Ability to trigger deploys', 'devops'],
+            ['view_events_admin', 'View Events Admin', 'Access to tile event admin', 'events'],
+            ['edit_events', 'Edit Events', 'Create/edit tile events', 'events'],
+            ['approve_submissions', 'Approve Submissions', 'Review and approve tile submissions', 'events'],
+            ['view_admin', 'View Admin Panel', 'Access to admin panel', 'admin'],
+            ['manage_users', 'Manage Users', 'Add/edit/remove users', 'admin'],
+            ['manage_roles', 'Manage Roles', 'Create and edit roles', 'admin'],
+            ['view_logs', 'View Activity Logs', 'Access to activity logs', 'admin'],
+            ['view_architecture', 'View Architecture', 'Access to architecture diagrams', 'docs'],
+          ];
+          for (const [id, name, desc, category] of defaultPermissions) {
+            await env.EVENT_TRACK_DB.prepare(
+              'INSERT OR IGNORE INTO rbac_permissions (id, name, description, category) VALUES (?, ?, ?, ?)'
+            ).bind(id, name, desc, category).run();
+          }
+        }
+        
+        // Seed default roles if empty
+        const existingRoles = await env.EVENT_TRACK_DB.prepare('SELECT COUNT(*) as count FROM rbac_roles').first();
+        if (!existingRoles || existingRoles.count === 0) {
+          const defaultRoles = [
+            ['member', 'Member', 'Basic clan member access', '#6b7280', 0, 1],
+            ['clan_officer', 'Clan Officer', 'Officers with attendance tracking', '#10b981', 10, 0],
+            ['event_host', 'Event Host', 'Can host and manage events', '#f59e0b', 20, 0],
+            ['developer', 'Developer', 'Full access except admin', '#8b5cf6', 30, 0],
+            ['super_admin', 'Super Admin', 'Full system access', '#ef4444', 100, 0],
+          ];
+          for (const [id, name, desc, color, priority, isDefault] of defaultRoles) {
+            await env.EVENT_TRACK_DB.prepare(
+              'INSERT OR IGNORE INTO rbac_roles (id, name, description, color, priority, is_default) VALUES (?, ?, ?, ?, ?, ?)'
+            ).bind(id, name, desc, color, priority, isDefault).run();
+          }
+          
+          // Seed role permissions
+          const rolePerms = [
+            // Member - basic access
+            ['member', 'view_architecture'],
+            // Clan Officer - attendance
+            ['clan_officer', 'view_cruddy'],
+            ['clan_officer', 'edit_cruddy'],
+            ['clan_officer', 'view_docs'],
+            ['clan_officer', 'view_architecture'],
+            // Event Host - events
+            ['event_host', 'view_cruddy'],
+            ['event_host', 'edit_cruddy'],
+            ['event_host', 'view_docs'],
+            ['event_host', 'view_events_admin'],
+            ['event_host', 'approve_submissions'],
+            ['event_host', 'view_architecture'],
+            // Developer - everything except admin
+            ['developer', 'view_cruddy'],
+            ['developer', 'edit_cruddy'],
+            ['developer', 'delete_cruddy'],
+            ['developer', 'view_docs'],
+            ['developer', 'view_devops'],
+            ['developer', 'trigger_deploy'],
+            ['developer', 'view_events_admin'],
+            ['developer', 'edit_events'],
+            ['developer', 'approve_submissions'],
+            ['developer', 'view_architecture'],
+            ['developer', 'view_logs'],
+            // Super Admin - everything
+            ['super_admin', 'view_cruddy'],
+            ['super_admin', 'edit_cruddy'],
+            ['super_admin', 'delete_cruddy'],
+            ['super_admin', 'view_docs'],
+            ['super_admin', 'view_devops'],
+            ['super_admin', 'trigger_deploy'],
+            ['super_admin', 'view_events_admin'],
+            ['super_admin', 'edit_events'],
+            ['super_admin', 'approve_submissions'],
+            ['super_admin', 'view_admin'],
+            ['super_admin', 'manage_users'],
+            ['super_admin', 'manage_roles'],
+            ['super_admin', 'view_logs'],
+            ['super_admin', 'view_architecture'],
+          ];
+          for (const [roleId, permId] of rolePerms) {
+            await env.EVENT_TRACK_DB.prepare(
+              'INSERT OR IGNORE INTO rbac_role_permissions (role_id, permission_id) VALUES (?, ?)'
+            ).bind(roleId, permId).run();
+          }
+        }
+        
         const result = await env.EVENT_TRACK_DB.prepare(`
           SELECT * FROM admin_users ORDER BY is_admin DESC, created_at DESC
         `).all();
@@ -1105,6 +1247,443 @@ export default {
         return new Response(JSON.stringify({ 
           logs: logs.results || [],
           action_counts: counts.results || []
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
+    // ==========================================================================
+    // RBAC (Role-Based Access Control) Endpoints
+    // ==========================================================================
+    
+    // GET /admin/permissions - List all permissions
+    if (method === "GET" && url.pathname === "/admin/permissions") {
+      const token = getTokenFromCookie(request);
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!await isAdmin(user)) {
+        return new Response(JSON.stringify({ error: "Not authorized" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        const permissions = await env.EVENT_TRACK_DB.prepare(`
+          SELECT * FROM rbac_permissions ORDER BY category, name
+        `).all();
+        
+        return new Response(JSON.stringify({ permissions: permissions.results || [] }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+    
+    // GET /admin/roles - List all roles with their permissions
+    if (method === "GET" && url.pathname === "/admin/roles") {
+      const token = getTokenFromCookie(request);
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!await isAdmin(user)) {
+        return new Response(JSON.stringify({ error: "Not authorized" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        // Get all roles
+        const roles = await env.EVENT_TRACK_DB.prepare(`
+          SELECT * FROM rbac_roles ORDER BY priority DESC, name
+        `).all();
+        
+        // Get permissions for each role
+        const rolePermissions = await env.EVENT_TRACK_DB.prepare(`
+          SELECT rp.role_id, rp.permission_id, p.name as permission_name, p.category
+          FROM rbac_role_permissions rp
+          JOIN rbac_permissions p ON rp.permission_id = p.id
+        `).all();
+        
+        // Get user count for each role
+        const userCounts = await env.EVENT_TRACK_DB.prepare(`
+          SELECT role_id, COUNT(*) as user_count
+          FROM rbac_user_roles
+          GROUP BY role_id
+        `).all();
+        
+        // Build role objects with permissions and user counts
+        const rolesWithPerms = (roles.results || []).map(role => {
+          const perms = (rolePermissions.results || [])
+            .filter(rp => rp.role_id === role.id)
+            .map(rp => ({ id: rp.permission_id, name: rp.permission_name, category: rp.category }));
+          const userCount = (userCounts.results || []).find(uc => uc.role_id === role.id)?.user_count || 0;
+          return { ...role, permissions: perms, user_count: userCount };
+        });
+        
+        return new Response(JSON.stringify({ roles: rolesWithPerms }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+    
+    // POST /admin/roles - Create a new role
+    if (method === "POST" && url.pathname === "/admin/roles") {
+      const token = getTokenFromCookie(request);
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!await isAdmin(user)) {
+        return new Response(JSON.stringify({ error: "Not authorized" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        const body = await request.json();
+        const { id, name, description, color, priority, permissions } = body;
+        
+        if (!id || !name) {
+          return new Response(JSON.stringify({ error: "id and name are required" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Create role
+        await env.EVENT_TRACK_DB.prepare(`
+          INSERT INTO rbac_roles (id, name, description, color, priority)
+          VALUES (?, ?, ?, ?, ?)
+        `).bind(id, name, description || '', color || '#6b7280', priority || 0).run();
+        
+        // Add permissions if provided
+        if (permissions && Array.isArray(permissions)) {
+          for (const permId of permissions) {
+            await env.EVENT_TRACK_DB.prepare(`
+              INSERT OR IGNORE INTO rbac_role_permissions (role_id, permission_id)
+              VALUES (?, ?)
+            `).bind(id, permId).run();
+          }
+        }
+        
+        logActivity(user.userId, user.username, 'role_created', `Created role: ${name}`);
+        
+        return new Response(JSON.stringify({ success: true, role_id: id }), {
+          status: 201,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+    
+    // PUT /admin/roles/:id - Update a role
+    if (method === "PUT" && url.pathname.match(/^\/admin\/roles\/[^/]+$/)) {
+      const token = getTokenFromCookie(request);
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!await isAdmin(user)) {
+        return new Response(JSON.stringify({ error: "Not authorized" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      const roleId = url.pathname.split('/').pop();
+      
+      try {
+        const body = await request.json();
+        const { name, description, color, priority, permissions } = body;
+        
+        // Update role details
+        await env.EVENT_TRACK_DB.prepare(`
+          UPDATE rbac_roles 
+          SET name = COALESCE(?, name),
+              description = COALESCE(?, description),
+              color = COALESCE(?, color),
+              priority = COALESCE(?, priority),
+              updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `).bind(name, description, color, priority, roleId).run();
+        
+        // Update permissions if provided
+        if (permissions && Array.isArray(permissions)) {
+          // Remove existing permissions
+          await env.EVENT_TRACK_DB.prepare(`
+            DELETE FROM rbac_role_permissions WHERE role_id = ?
+          `).bind(roleId).run();
+          
+          // Add new permissions
+          for (const permId of permissions) {
+            await env.EVENT_TRACK_DB.prepare(`
+              INSERT INTO rbac_role_permissions (role_id, permission_id)
+              VALUES (?, ?)
+            `).bind(roleId, permId).run();
+          }
+        }
+        
+        logActivity(user.userId, user.username, 'role_updated', `Updated role: ${roleId}`);
+        
+        return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+    
+    // DELETE /admin/roles/:id - Delete a role
+    if (method === "DELETE" && url.pathname.match(/^\/admin\/roles\/[^/]+$/)) {
+      const token = getTokenFromCookie(request);
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!await isAdmin(user)) {
+        return new Response(JSON.stringify({ error: "Not authorized" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      const roleId = url.pathname.split('/').pop();
+      
+      try {
+        // Don't allow deleting built-in roles
+        const role = await env.EVENT_TRACK_DB.prepare(`
+          SELECT * FROM rbac_roles WHERE id = ?
+        `).bind(roleId).first();
+        
+        if (role?.is_default) {
+          return new Response(JSON.stringify({ error: "Cannot delete default role" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Delete role (cascades to role_permissions and user_roles)
+        await env.EVENT_TRACK_DB.prepare(`DELETE FROM rbac_user_roles WHERE role_id = ?`).bind(roleId).run();
+        await env.EVENT_TRACK_DB.prepare(`DELETE FROM rbac_role_permissions WHERE role_id = ?`).bind(roleId).run();
+        await env.EVENT_TRACK_DB.prepare(`DELETE FROM rbac_roles WHERE id = ?`).bind(roleId).run();
+        
+        logActivity(user.userId, user.username, 'role_deleted', `Deleted role: ${roleId}`);
+        
+        return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+    
+    // GET /admin/user-roles/:discord_id - Get roles for a user
+    if (method === "GET" && url.pathname.match(/^\/admin\/user-roles\/\d{17,20}$/)) {
+      const token = getTokenFromCookie(request);
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!await isAdmin(user)) {
+        return new Response(JSON.stringify({ error: "Not authorized" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      const discordId = url.pathname.split('/').pop();
+      
+      try {
+        const userRoles = await env.EVENT_TRACK_DB.prepare(`
+          SELECT ur.*, r.name as role_name, r.color, r.priority
+          FROM rbac_user_roles ur
+          JOIN rbac_roles r ON ur.role_id = r.id
+          WHERE ur.discord_id = ?
+          ORDER BY r.priority DESC
+        `).bind(discordId).all();
+        
+        return new Response(JSON.stringify({ roles: userRoles.results || [] }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+    
+    // POST /admin/user-roles - Assign role to user
+    if (method === "POST" && url.pathname === "/admin/user-roles") {
+      const token = getTokenFromCookie(request);
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!await isAdmin(user)) {
+        return new Response(JSON.stringify({ error: "Not authorized" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        const body = await request.json();
+        const { discord_id, role_id } = body;
+        
+        if (!discord_id || !role_id) {
+          return new Response(JSON.stringify({ error: "discord_id and role_id are required" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        await env.EVENT_TRACK_DB.prepare(`
+          INSERT OR REPLACE INTO rbac_user_roles (discord_id, role_id, granted_by, granted_at)
+          VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        `).bind(discord_id, role_id, user.userId).run();
+        
+        logActivity(user.userId, user.username, 'role_assigned', `Assigned role ${role_id} to user ${discord_id}`);
+        
+        return new Response(JSON.stringify({ success: true }), {
+          status: 201,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+    
+    // DELETE /admin/user-roles - Remove role from user
+    if (method === "DELETE" && url.pathname === "/admin/user-roles") {
+      const token = getTokenFromCookie(request);
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!await isAdmin(user)) {
+        return new Response(JSON.stringify({ error: "Not authorized" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        const body = await request.json();
+        const { discord_id, role_id } = body;
+        
+        if (!discord_id || !role_id) {
+          return new Response(JSON.stringify({ error: "discord_id and role_id are required" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        await env.EVENT_TRACK_DB.prepare(`
+          DELETE FROM rbac_user_roles WHERE discord_id = ? AND role_id = ?
+        `).bind(discord_id, role_id).run();
+        
+        logActivity(user.userId, user.username, 'role_removed', `Removed role ${role_id} from user ${discord_id}`);
+        
+        return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+    
+    // GET /auth/permissions - Get effective permissions for current user (computed from roles)
+    if (method === "GET" && url.pathname === "/auth/permissions") {
+      const token = getTokenFromCookie(request);
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user) {
+        return new Response(JSON.stringify({ error: "Not authenticated" }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        // Get user's roles
+        const userRoles = await env.EVENT_TRACK_DB.prepare(`
+          SELECT r.* FROM rbac_roles r
+          JOIN rbac_user_roles ur ON r.id = ur.role_id
+          WHERE ur.discord_id = ?
+          ORDER BY r.priority DESC
+        `).bind(user.userId).all();
+        
+        // Get permissions from all user's roles
+        const roleIds = (userRoles.results || []).map(r => r.id);
+        let permissions = [];
+        
+        if (roleIds.length > 0) {
+          const placeholders = roleIds.map(() => '?').join(',');
+          const permsResult = await env.EVENT_TRACK_DB.prepare(`
+            SELECT DISTINCT p.* FROM rbac_permissions p
+            JOIN rbac_role_permissions rp ON p.id = rp.permission_id
+            WHERE rp.role_id IN (${placeholders})
+          `).bind(...roleIds).all();
+          permissions = permsResult.results || [];
+        }
+        
+        // Also check legacy flags from admin_users
+        const adminUser = await env.EVENT_TRACK_DB.prepare(`
+          SELECT * FROM admin_users WHERE discord_id = ?
+        `).bind(user.userId).first();
+        
+        // Build effective permissions list (combining RBAC + legacy)
+        const effectivePermissions = new Set(permissions.map(p => p.id));
+        
+        if (adminUser) {
+          if (adminUser.access_cruddy) effectivePermissions.add('view_cruddy').add('edit_cruddy');
+          if (adminUser.access_docs) effectivePermissions.add('view_docs');
+          if (adminUser.access_devops) effectivePermissions.add('view_devops');
+          if (adminUser.access_events) effectivePermissions.add('view_events_admin');
+          if (adminUser.is_admin) {
+            effectivePermissions.add('view_admin').add('manage_users').add('manage_roles').add('view_logs');
+          }
+        }
+        
+        // Super admins always have everything
+        if (ADMIN_USER_IDS.includes(user.userId)) {
+          const allPerms = await env.EVENT_TRACK_DB.prepare('SELECT id FROM rbac_permissions').all();
+          (allPerms.results || []).forEach(p => effectivePermissions.add(p.id));
+        }
+        
+        return new Response(JSON.stringify({
+          roles: userRoles.results || [],
+          permissions: Array.from(effectivePermissions),
+          is_super_admin: ADMIN_USER_IDS.includes(user.userId)
         }), {
           status: 200,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
