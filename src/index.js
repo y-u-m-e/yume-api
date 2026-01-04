@@ -255,6 +255,31 @@ export default {
       }
     };
 
+    /**
+     * Log user activity to the database
+     * @param {string} discordId - User's Discord ID
+     * @param {string} username - User's username
+     * @param {string} action - Action type (login, submission, etc.)
+     * @param {*} details - Additional details (will be JSON stringified)
+     */
+    const logActivity = async (discordId, username, action, details = null) => {
+      try {
+        await env.EVENT_TRACK_DB.prepare(`
+          INSERT INTO activity_logs (discord_id, discord_username, action, details, ip_address, user_agent)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).bind(
+          discordId,
+          username,
+          action,
+          details ? JSON.stringify(details) : null,
+          request.headers.get('CF-Connecting-IP'),
+          request.headers.get('User-Agent')?.substring(0, 255)
+        ).run();
+      } catch (e) {
+        console.error('Failed to log activity:', e);
+      }
+    };
+
     // --- Allowed Origins (CORS Security) ---
     const ALLOWED_ORIGINS = [
       "https://itai.gg",
@@ -1914,29 +1939,6 @@ export default {
         });
       }
     }
-
-    // ==========================================================================
-    // HELPER FUNCTIONS (defined early for use throughout)
-    // ==========================================================================
-    
-    // Helper: Log user activity
-    const logActivity = async (discordId, username, action, details = null) => {
-      try {
-        await env.EVENT_TRACK_DB.prepare(`
-          INSERT INTO activity_logs (discord_id, discord_username, action, details, ip_address, user_agent)
-          VALUES (?, ?, ?, ?, ?, ?)
-        `).bind(
-          discordId,
-          username,
-          action,
-          details ? JSON.stringify(details) : null,
-          request.headers.get('CF-Connecting-IP'),
-          request.headers.get('User-Agent')?.substring(0, 255)
-        ).run();
-      } catch (e) {
-        console.error('Failed to log activity:', e);
-      }
-    };
 
     // ==========================================================================
     // SESH AUTHOR MAP MANAGEMENT
