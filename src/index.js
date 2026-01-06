@@ -1157,24 +1157,26 @@ export default {
     const allowedUsersCruddy = (env.ALLOWED_USER_IDS_CRUDDY || "").split(",").map(id => id.trim()).filter(Boolean);
     const allowedUsersGeneral = (env.ALLOWED_USER_IDS || "").split(",").map(id => id.trim()).filter(Boolean);
     
-    // Helper: Get user permissions from D1 database
+    // Helper: Get user info from D1 database (legacy compatibility)
+    // Note: Actual permissions now come from RBAC system
     const getUserPermissions = async (userId) => {
       try {
         const result = await env.EVENT_TRACK_DB.prepare(`
-          SELECT * FROM admin_users WHERE discord_id = ?
+          SELECT * FROM users WHERE discord_id = ?
         `).bind(userId).first();
         
         if (result) {
           return {
             found: true,
-            isAdmin: result.is_admin === 1,
+            isAdmin: ADMIN_USER_IDS.includes(userId), // Admin status from hardcoded list or RBAC
             isBanned: result.is_banned === 1,
             access: {
-              cruddy: result.access_cruddy === 1,
-              docs: result.access_docs === 1,
-              devops: result.access_devops === 1,
-              infographic: result.access_infographic === 1,
-              events: result.access_events === 1
+              // Legacy access checks - now handled by RBAC
+              cruddy: true,
+              docs: true,
+              devops: true,
+              infographic: true,
+              events: true
             }
           };
         }
@@ -1421,62 +1423,6 @@ export default {
           }
         }
         
-        // Auto-register user if coming from events site
-        if (source === 'ironforged-events') {
-          try {
-            // Create event_users table if it doesn't exist
-            await env.EVENT_TRACK_DB.prepare(`
-              CREATE TABLE IF NOT EXISTS event_users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                discord_id TEXT UNIQUE NOT NULL,
-                username TEXT NOT NULL,
-                global_name TEXT,
-                avatar TEXT,
-                first_login_at TEXT DEFAULT (datetime('now')),
-                last_login_at TEXT DEFAULT (datetime('now')),
-                login_count INTEGER DEFAULT 1
-              )
-            `).run();
-            
-            // Try to insert or update user
-            const existingUser = await env.EVENT_TRACK_DB.prepare(
-              `SELECT id FROM event_users WHERE discord_id = ?`
-            ).bind(user.id).first();
-            
-            if (existingUser) {
-              // Update existing user
-              await env.EVENT_TRACK_DB.prepare(`
-                UPDATE event_users 
-                SET username = ?, global_name = ?, avatar = ?, 
-                    last_login_at = datetime('now'), login_count = login_count + 1
-                WHERE discord_id = ?
-              `).bind(user.username, user.global_name, user.avatar, user.id).run();
-              console.log(`Updated event user: ${user.username} (${user.id})`);
-            } else {
-              // Insert new user
-              await env.EVENT_TRACK_DB.prepare(`
-                INSERT INTO event_users (discord_id, username, global_name, avatar)
-                VALUES (?, ?, ?, ?)
-              `).bind(user.id, user.username, user.global_name, user.avatar).run();
-              console.log(`Registered new event user: ${user.username} (${user.id})`);
-              
-              // Auto-assign event_participant role to new users from events site
-              try {
-                await env.EVENT_TRACK_DB.prepare(`
-                  INSERT OR IGNORE INTO rbac_user_roles (discord_id, role_id, granted_by, granted_at)
-                  VALUES (?, 'event_participant', 'system', CURRENT_TIMESTAMP)
-                `).bind(user.id).run();
-                console.log(`Assigned event_participant role to: ${user.username} (${user.id})`);
-              } catch (roleErr) {
-                console.error("Failed to assign event_participant role:", roleErr);
-              }
-            }
-          } catch (regErr) {
-            // Don't block login if registration fails
-            console.error("Failed to auto-register event user:", regErr);
-          }
-        }
-
         // Log user login activity
         try {
           await env.EVENT_TRACK_DB.prepare(`
@@ -1494,29 +1440,44 @@ export default {
           console.error('Failed to log login activity:', logErr);
         }
         
-        // Auto-add/update user in admin_users table (for user management visibility)
+        // Add/update user in unified users table
         try {
-          const existingAdminUser = await env.EVENT_TRACK_DB.prepare(
-            `SELECT id FROM admin_users WHERE discord_id = ?`
+          const existingUser = await env.EVENT_TRACK_DB.prepare(
+            `SELECT id FROM users WHERE discord_id = ?`
           ).bind(user.id).first();
           
-          if (existingAdminUser) {
-            // Update existing user's info and last_login
+          if (existingUser) {
+            // Update existing user's info and login stats
             await env.EVENT_TRACK_DB.prepare(`
-              UPDATE admin_users 
-              SET username = ?, global_name = ?, avatar = ?, last_login = datetime('now')
+              UPDATE users 
+              SET username = ?, global_name = ?, avatar = ?, 
+                  last_login_at = datetime('now'), login_count = login_count + 1,
+                  updated_at = datetime('now')
               WHERE discord_id = ?
             `).bind(user.username, user.global_name, user.avatar, user.id).run();
           } else {
-            // Insert new user with no special permissions
+            // Insert new user
             await env.EVENT_TRACK_DB.prepare(`
-              INSERT INTO admin_users (discord_id, username, global_name, avatar, last_login)
-              VALUES (?, ?, ?, ?, datetime('now'))
+              INSERT INTO users (discord_id, username, global_name, avatar, first_login_at, last_login_at, login_count)
+              VALUES (?, ?, ?, ?, datetime('now'), datetime('now'), 1)
             `).bind(user.id, user.username, user.global_name, user.avatar).run();
-            console.log(`Auto-registered user in admin_users: ${user.username} (${user.id})`);
+            console.log(`Registered new user: ${user.username} (${user.id})`);
+            
+            // Auto-assign event_participant role to new users from events site
+            if (source === 'ironforged-events') {
+              try {
+                await env.EVENT_TRACK_DB.prepare(`
+                  INSERT OR IGNORE INTO rbac_user_roles (discord_id, role_id, granted_by, granted_at)
+                  VALUES (?, 'event_participant', 'system', CURRENT_TIMESTAMP)
+                `).bind(user.id).run();
+                console.log(`Assigned event_participant role to: ${user.username} (${user.id})`);
+              } catch (roleErr) {
+                console.error("Failed to assign event_participant role:", roleErr);
+              }
+            }
           }
-        } catch (adminUserErr) {
-          console.error('Failed to auto-register user in admin_users:', adminUserErr);
+        } catch (userErr) {
+          console.error('Failed to register user:', userErr);
         }
         
         // Redirect back to the app with cookie set
@@ -1605,7 +1566,7 @@ export default {
       if (perms.found) {
         ctx.waitUntil(
           env.EVENT_TRACK_DB.prepare(`
-            UPDATE admin_users SET last_login = datetime('now') WHERE discord_id = ?
+            UPDATE users SET last_login_at = datetime('now') WHERE discord_id = ?
           `).bind(user.userId).run()
         );
       }
@@ -1688,36 +1649,59 @@ export default {
       }
       
       try {
-        // Try to get users from D1, create table if doesn't exist
-        // Enhanced with more granular permissions
+        // === UNIFIED USERS TABLE ===
+        // Single source of truth for all user data (replaces admin_users and event_users)
         await env.EVENT_TRACK_DB.prepare(`
-          CREATE TABLE IF NOT EXISTS admin_users (
+          CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             discord_id TEXT UNIQUE NOT NULL,
             username TEXT,
             global_name TEXT,
             avatar TEXT,
-            is_admin INTEGER DEFAULT 0,
-            access_cruddy INTEGER DEFAULT 0,
-            access_docs INTEGER DEFAULT 0,
-            access_devops INTEGER DEFAULT 0,
-            access_infographic INTEGER DEFAULT 0,
-            access_events INTEGER DEFAULT 0,
-            is_banned INTEGER DEFAULT 0,
+            rsn TEXT,
             notes TEXT,
-            last_login TEXT,
+            is_banned INTEGER DEFAULT 0,
+            first_login_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_login_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            login_count INTEGER DEFAULT 1,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP
           )
         `).run();
         
-        // Add new columns if they don't exist (for migration)
-        const columns = ['is_admin', 'access_devops', 'access_infographic', 'access_events', 'is_banned', 'notes', 'last_login', 'updated_at', 'global_name', 'avatar'];
-        for (const col of columns) {
+        // Add columns if they don't exist (for migration from older schema)
+        const userColumns = ['rsn', 'notes', 'is_banned', 'first_login_at', 'last_login_at', 'login_count'];
+        for (const col of userColumns) {
           try {
-            await env.EVENT_TRACK_DB.prepare(`ALTER TABLE admin_users ADD COLUMN ${col} ${col.startsWith('is_') || col.startsWith('access_') ? 'INTEGER DEFAULT 0' : 'TEXT'}`).run();
+            const colType = col === 'is_banned' || col === 'login_count' ? 'INTEGER DEFAULT 0' : 'TEXT';
+            await env.EVENT_TRACK_DB.prepare(`ALTER TABLE users ADD COLUMN ${col} ${colType}`).run();
           } catch (e) { /* Column likely exists */ }
         }
+        
+        // Migrate data from admin_users to users (one-time migration)
+        try {
+          await env.EVENT_TRACK_DB.prepare(`
+            INSERT OR IGNORE INTO users (discord_id, username, global_name, avatar, notes, is_banned, last_login_at, created_at)
+            SELECT discord_id, username, global_name, avatar, notes, is_banned, last_login, created_at
+            FROM admin_users
+          `).run();
+        } catch (e) { /* admin_users may not exist */ }
+        
+        // Migrate data from event_users to users (one-time migration)
+        try {
+          await env.EVENT_TRACK_DB.prepare(`
+            INSERT OR IGNORE INTO users (discord_id, username, global_name, avatar, rsn, notes, first_login_at, last_login_at, login_count)
+            SELECT discord_id, username, global_name, avatar, rsn, notes, first_login_at, last_login_at, login_count
+            FROM event_users
+          `).run();
+          // Update existing users with RSN from event_users if they have it
+          await env.EVENT_TRACK_DB.prepare(`
+            UPDATE users SET 
+              rsn = COALESCE((SELECT rsn FROM event_users WHERE event_users.discord_id = users.discord_id), users.rsn),
+              login_count = COALESCE((SELECT login_count FROM event_users WHERE event_users.discord_id = users.discord_id), users.login_count)
+            WHERE discord_id IN (SELECT discord_id FROM event_users)
+          `).run();
+        } catch (e) { /* event_users may not exist */ }
         
         // === RBAC Tables ===
         // Permissions table - defines what permissions exist
@@ -1898,30 +1882,12 @@ export default {
           `INSERT OR IGNORE INTO rbac_role_permissions (role_id, permission_id) VALUES ('event_participant', 'view_architecture')`
         ).run();
         
-        // Migrate event_users to admin_users (for users not already in admin_users)
-        try {
-          await env.EVENT_TRACK_DB.prepare(`
-            INSERT OR IGNORE INTO admin_users (discord_id, username, global_name, avatar, last_login, created_at)
-            SELECT discord_id, username, global_name, avatar, last_login_at, first_login_at
-            FROM event_users
-            WHERE discord_id NOT IN (SELECT discord_id FROM admin_users)
-          `).run();
-          console.log('Migrated event_users to admin_users');
-        } catch (migrateErr) {
-          console.error('Event user migration error (may be expected if table does not exist):', migrateErr.message);
-        }
-        
         const result = await env.EVENT_TRACK_DB.prepare(`
-          SELECT * FROM admin_users ORDER BY is_admin DESC, created_at DESC
+          SELECT * FROM users ORDER BY last_login_at DESC, created_at DESC
         `).all();
         
-        // Also return env-based users for reference
         return new Response(JSON.stringify({
-          users: result.results || [],
-          env_users: {
-            cruddy: allowedUsersCruddy,
-            docs: allowedUsersDocs
-          }
+          users: result.results || []
         }), {
           status: 200,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -1934,7 +1900,7 @@ export default {
       }
     }
     
-    // POST /admin/users - Add a new allowed user
+    // POST /admin/users - Add or update a user
     if (method === "POST" && url.pathname === "/admin/users") {
       const token = getTokenFromCookie(request);
       const user = token ? await verifyToken(token) : null;
@@ -1948,20 +1914,7 @@ export default {
       
       try {
         const body = await request.json();
-        const { 
-          discord_id, 
-          username, 
-          global_name,
-          avatar,
-          is_admin,
-          access_cruddy, 
-          access_docs,
-          access_devops,
-          access_infographic,
-          access_events,
-          is_banned,
-          notes
-        } = body;
+        const { discord_id, username, global_name, avatar, rsn, notes, is_banned } = body;
         
         // Validate discord_id format (17-20 digit number)
         if (!discord_id || !/^\d{17,20}$/.test(discord_id)) {
@@ -1974,42 +1927,29 @@ export default {
         // Sanitize text inputs
         const sanitizedUsername = sanitizeString(username, 100);
         const sanitizedGlobalName = sanitizeString(global_name, 100);
+        const sanitizedRsn = sanitizeString(rsn, 50);
         const sanitizedNotes = sanitizeString(notes, 500);
         
-        // Insert or update user with all permissions
+        // Insert or update user
         await env.EVENT_TRACK_DB.prepare(`
-          INSERT INTO admin_users (
-            discord_id, username, global_name, avatar, is_admin,
-            access_cruddy, access_docs, access_devops, access_infographic, access_events,
-            is_banned, notes, updated_at
-          )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+          INSERT INTO users (discord_id, username, global_name, avatar, rsn, notes, is_banned, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
           ON CONFLICT(discord_id) DO UPDATE SET
-            username = excluded.username,
-            global_name = excluded.global_name,
-            avatar = excluded.avatar,
-            is_admin = excluded.is_admin,
-            access_cruddy = excluded.access_cruddy,
-            access_docs = excluded.access_docs,
-            access_devops = excluded.access_devops,
-            access_infographic = excluded.access_infographic,
-            access_events = excluded.access_events,
-            is_banned = excluded.is_banned,
+            username = COALESCE(excluded.username, users.username),
+            global_name = COALESCE(excluded.global_name, users.global_name),
+            avatar = COALESCE(excluded.avatar, users.avatar),
+            rsn = COALESCE(excluded.rsn, users.rsn),
             notes = excluded.notes,
+            is_banned = excluded.is_banned,
             updated_at = datetime('now')
         `).bind(
           discord_id, 
           sanitizedUsername || null, 
           sanitizedGlobalName || null,
           avatar || null,
-          is_admin ? 1 : 0,
-          access_cruddy ? 1 : 0, 
-          access_docs ? 1 : 0,
-          access_devops ? 1 : 0,
-          access_infographic ? 1 : 0,
-          access_events ? 1 : 0,
-          is_banned ? 1 : 0,
-          sanitizedNotes || null
+          sanitizedRsn || null,
+          sanitizedNotes || null,
+          is_banned ? 1 : 0
         ).run();
         
         return new Response(JSON.stringify({ success: true }), {
@@ -2040,9 +1980,9 @@ export default {
       const discordId = deleteUserMatch[1];
       
       try {
-        await env.EVENT_TRACK_DB.prepare(`
-          DELETE FROM admin_users WHERE discord_id = ?
-        `).bind(discordId).run();
+        // Also remove user's role assignments
+        await env.EVENT_TRACK_DB.prepare(`DELETE FROM rbac_user_roles WHERE discord_id = ?`).bind(discordId).run();
+        await env.EVENT_TRACK_DB.prepare(`DELETE FROM users WHERE discord_id = ?`).bind(discordId).run();
         
         return new Response(JSON.stringify({ success: true }), {
           status: 200,
@@ -2088,9 +2028,9 @@ export default {
         const action = url.searchParams.get('action'); // Filter by action type
         
         let query = `
-          SELECT al.*, au.global_name, au.avatar 
+          SELECT al.*, u.global_name, u.avatar 
           FROM activity_logs al
-          LEFT JOIN admin_users au ON al.discord_id = au.discord_id
+          LEFT JOIN users u ON al.discord_id = u.discord_id
         `;
         const bindings = [];
         
@@ -2524,23 +2464,16 @@ export default {
           permissions = permsResult.results || [];
         }
         
-        // Also check legacy flags from admin_users
-        const adminUser = await env.EVENT_TRACK_DB.prepare(`
-          SELECT * FROM admin_users WHERE discord_id = ?
+        // Check user flags
+        const dbUser = await env.EVENT_TRACK_DB.prepare(`
+          SELECT * FROM users WHERE discord_id = ?
         `).bind(user.userId).first();
         
         // Build effective permissions list (combining RBAC + legacy)
         const effectivePermissions = new Set(permissions.map(p => p.id));
         
-        if (adminUser) {
-          if (adminUser.access_cruddy) effectivePermissions.add('view_cruddy').add('edit_cruddy');
-          if (adminUser.access_docs) effectivePermissions.add('view_docs');
-          if (adminUser.access_devops) effectivePermissions.add('view_devops');
-          if (adminUser.access_events) effectivePermissions.add('view_events_admin');
-          if (adminUser.is_admin) {
-            effectivePermissions.add('view_admin').add('manage_users').add('manage_roles').add('view_logs');
-          }
-        }
+        // Note: Legacy permission flags removed - all permissions now come from RBAC roles
+        // The dbUser variable is kept for is_banned checks if needed
         
         // Super admins always have everything
         if (ADMIN_USER_IDS.includes(user.userId)) {
@@ -4098,19 +4031,8 @@ You don't have permission to view this content. Contact an administrator if you 
         `).run();
       } catch (e) { /* Column exists */ }
       
-      // Add RSN column to event_users table
-      try {
-        await env.EVENT_TRACK_DB.prepare(`
-          ALTER TABLE event_users ADD COLUMN rsn TEXT
-        `).run();
-      } catch (e) { /* Column exists */ }
-      
-      // Add notes column to event_users table (for admin notes)
-      try {
-        await env.EVENT_TRACK_DB.prepare(`
-          ALTER TABLE event_users ADD COLUMN notes TEXT
-        `).run();
-      } catch (e) { /* Column exists */ }
+      // Legacy: event_users migrations (kept for backward compatibility during transition)
+      // New users table already has rsn and notes columns
       
       // Activity logs table
       await env.EVENT_TRACK_DB.prepare(`
@@ -4143,13 +4065,13 @@ You don't have permission to view this content. Contact an administrator if you 
       }
       
       try {
-        // Look up user's RSN from event_users table
+        // Look up user's RSN from users table
         let rsn = null;
         try {
-          const eventUser = await env.EVENT_TRACK_DB.prepare(
-            `SELECT rsn FROM event_users WHERE discord_id = ?`
+          const dbUser = await env.EVENT_TRACK_DB.prepare(
+            `SELECT rsn FROM users WHERE discord_id = ?`
           ).bind(user.userId).first();
-          rsn = eventUser?.rsn || null;
+          rsn = dbUser?.rsn || null;
         } catch (e) {
           console.log('Could not fetch RSN for user:', e.message);
         }
@@ -4982,7 +4904,7 @@ You don't have permission to view this content. Contact an administrator if you 
                  au.global_name, au.avatar
           FROM tile_submissions ts
           JOIN tile_event_tiles t ON ts.tile_id = t.id
-          LEFT JOIN admin_users au ON ts.discord_id = au.discord_id
+          LEFT JOIN users u ON ts.discord_id = u.discord_id
           WHERE ts.event_id = ?
         `;
         const bindings = [eventId];
@@ -5246,7 +5168,7 @@ You don't have permission to view this content. Contact an administrator if you 
         const search = url.searchParams.get('search') || '';
         const hasRsn = url.searchParams.get('has_rsn'); // 'true', 'false', or null for all
         
-        let query = `SELECT * FROM event_users WHERE 1=1`;
+        let query = `SELECT * FROM users WHERE 1=1`;
         const params = [];
         
         if (search) {
@@ -5324,7 +5246,7 @@ You don't have permission to view this content. Contact an administrator if you 
         params.push(discordId);
         
         const result = await env.EVENT_TRACK_DB.prepare(`
-          UPDATE event_users SET ${updates.join(', ')} WHERE discord_id = ?
+          UPDATE users SET ${updates.join(', ')}, updated_at = datetime('now') WHERE discord_id = ?
         `).bind(...params).run();
         
         if (result.meta.changes === 0) {
@@ -5377,7 +5299,7 @@ You don't have permission to view this content. Contact an administrator if you 
         
         // Check if user already exists
         const existing = await env.EVENT_TRACK_DB.prepare(
-          `SELECT id FROM event_users WHERE discord_id = ?`
+          `SELECT id FROM users WHERE discord_id = ?`
         ).bind(discordId).first();
         
         if (existing) {
@@ -5388,8 +5310,8 @@ You don't have permission to view this content. Contact an administrator if you 
         }
         
         await env.EVENT_TRACK_DB.prepare(`
-          INSERT INTO event_users (discord_id, username, rsn, notes)
-          VALUES (?, ?, ?, ?)
+          INSERT INTO users (discord_id, username, rsn, notes, first_login_at, last_login_at)
+          VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
         `).bind(discordId, username || 'Unknown', rsn || null, notes || null).run();
         
         return new Response(JSON.stringify({ success: true }), {
@@ -5421,8 +5343,11 @@ You don't have permission to view this content. Contact an administrator if you 
       try {
         await initTileEventTables();
         
+        // Also remove user's role assignments
+        await env.EVENT_TRACK_DB.prepare(`DELETE FROM rbac_user_roles WHERE discord_id = ?`).bind(discordId).run();
+        
         const result = await env.EVENT_TRACK_DB.prepare(`
-          DELETE FROM event_users WHERE discord_id = ?
+          DELETE FROM users WHERE discord_id = ?
         `).bind(discordId).run();
         
         return new Response(JSON.stringify({ 
@@ -5706,9 +5631,9 @@ You don't have permission to view this content. Contact an administrator if you 
         await initTileEventTables();
         
         const participants = await env.EVENT_TRACK_DB.prepare(`
-          SELECT tep.*, au.username, au.global_name, au.avatar
+          SELECT tep.*, u.username, u.global_name, u.avatar
           FROM tile_event_progress tep
-          LEFT JOIN admin_users au ON tep.discord_id = au.discord_id
+          LEFT JOIN users u ON tep.discord_id = u.discord_id
           WHERE tep.event_id = ?
           ORDER BY tep.current_tile DESC, tep.updated_at DESC
         `).bind(eventId).all();
