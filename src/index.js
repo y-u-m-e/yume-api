@@ -1778,6 +1778,8 @@ export default {
             ['view_docs', 'View Documentation', 'Access to documentation pages', 'docs'],
             ['view_devops', 'View DevOps', 'Access to DevOps panel', 'devops'],
             ['trigger_deploy', 'Trigger Deployments', 'Ability to trigger deploys', 'devops'],
+            ['view_events', 'View Events', 'Can view available tile events', 'events'],
+            ['participate_events', 'Participate in Events', 'Can join and submit to tile events', 'events'],
             ['view_events_admin', 'View Events Admin', 'Access to tile event admin', 'events'],
             ['edit_events', 'Edit Events', 'Create/edit tile events', 'events'],
             ['approve_submissions', 'Approve Submissions', 'Review and approve tile submissions', 'events'],
@@ -1814,8 +1816,12 @@ export default {
           // Seed role permissions
           const rolePerms = [
             // Event Participant - can participate in events (auto-assigned to events site users)
+            ['event_participant', 'view_events'],
+            ['event_participant', 'participate_events'],
             ['event_participant', 'view_architecture'],
             // Member - basic access
+            ['member', 'view_events'],
+            ['member', 'participate_events'],
             ['member', 'view_architecture'],
             // Clan Officer - attendance
             ['clan_officer', 'view_cruddy'],
@@ -1868,6 +1874,25 @@ export default {
         await env.EVENT_TRACK_DB.prepare(
           `INSERT OR IGNORE INTO rbac_roles (id, name, description, color, priority, is_default) 
            VALUES ('event_participant', 'Event Participant', 'Can participate in tile events', '#f97316', -10, 0)`
+        ).run();
+        
+        // Ensure new event permissions exist (migration)
+        const eventPerms = [
+          ['view_events', 'View Events', 'Can view available tile events', 'events'],
+          ['participate_events', 'Participate in Events', 'Can join and submit to tile events', 'events'],
+        ];
+        for (const [id, name, desc, category] of eventPerms) {
+          await env.EVENT_TRACK_DB.prepare(
+            'INSERT OR IGNORE INTO rbac_permissions (id, name, description, category) VALUES (?, ?, ?, ?)'
+          ).bind(id, name, desc, category).run();
+        }
+        
+        // Assign event permissions to event_participant role
+        await env.EVENT_TRACK_DB.prepare(
+          `INSERT OR IGNORE INTO rbac_role_permissions (role_id, permission_id) VALUES ('event_participant', 'view_events')`
+        ).run();
+        await env.EVENT_TRACK_DB.prepare(
+          `INSERT OR IGNORE INTO rbac_role_permissions (role_id, permission_id) VALUES ('event_participant', 'participate_events')`
         ).run();
         await env.EVENT_TRACK_DB.prepare(
           `INSERT OR IGNORE INTO rbac_role_permissions (role_id, permission_id) VALUES ('event_participant', 'view_architecture')`
