@@ -1494,6 +1494,31 @@ export default {
           console.error('Failed to log login activity:', logErr);
         }
         
+        // Auto-add/update user in admin_users table (for user management visibility)
+        try {
+          const existingAdminUser = await env.EVENT_TRACK_DB.prepare(
+            `SELECT id FROM admin_users WHERE discord_id = ?`
+          ).bind(user.id).first();
+          
+          if (existingAdminUser) {
+            // Update existing user's info and last_login
+            await env.EVENT_TRACK_DB.prepare(`
+              UPDATE admin_users 
+              SET username = ?, global_name = ?, avatar = ?, last_login = datetime('now')
+              WHERE discord_id = ?
+            `).bind(user.username, user.global_name, user.avatar, user.id).run();
+          } else {
+            // Insert new user with no special permissions
+            await env.EVENT_TRACK_DB.prepare(`
+              INSERT INTO admin_users (discord_id, username, global_name, avatar, last_login)
+              VALUES (?, ?, ?, ?, datetime('now'))
+            `).bind(user.id, user.username, user.global_name, user.avatar).run();
+            console.log(`Auto-registered user in admin_users: ${user.username} (${user.id})`);
+          }
+        } catch (adminUserErr) {
+          console.error('Failed to auto-register user in admin_users:', adminUserErr);
+        }
+        
         // Redirect back to the app with cookie set
         // Use SameSite=None for cross-site cookies
         const cookieOptions = `yume_auth=${sessionToken}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=${7 * 24 * 60 * 60}`;
