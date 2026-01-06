@@ -1898,6 +1898,19 @@ export default {
           `INSERT OR IGNORE INTO rbac_role_permissions (role_id, permission_id) VALUES ('event_participant', 'view_architecture')`
         ).run();
         
+        // Migrate event_users to admin_users (for users not already in admin_users)
+        try {
+          await env.EVENT_TRACK_DB.prepare(`
+            INSERT OR IGNORE INTO admin_users (discord_id, username, global_name, avatar, last_login, created_at)
+            SELECT discord_id, username, global_name, avatar, last_login_at, first_login_at
+            FROM event_users
+            WHERE discord_id NOT IN (SELECT discord_id FROM admin_users)
+          `).run();
+          console.log('Migrated event_users to admin_users');
+        } catch (migrateErr) {
+          console.error('Event user migration error (may be expected if table does not exist):', migrateErr.message);
+        }
+        
         const result = await env.EVENT_TRACK_DB.prepare(`
           SELECT * FROM admin_users ORDER BY is_admin DESC, created_at DESC
         `).all();
