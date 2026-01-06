@@ -4901,7 +4901,7 @@ You don't have permission to view this content. Contact an administrator if you 
         
         let query = `
           SELECT ts.*, t.title as tile_title, t.position as tile_position,
-                 au.global_name, au.avatar
+                 u.global_name, u.avatar
           FROM tile_submissions ts
           JOIN tile_event_tiles t ON ts.tile_id = t.id
           LEFT JOIN users u ON ts.discord_id = u.discord_id
