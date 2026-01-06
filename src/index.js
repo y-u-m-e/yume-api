@@ -1214,6 +1214,35 @@ export default {
         default: return allowedUsersGeneral.includes(userId);
       }
     };
+    
+    // Helper: Check if user has a specific RBAC permission
+    const hasRbacPermission = async (userId, permissionId) => {
+      // Super admins always have all permissions
+      if (ADMIN_USER_IDS.includes(userId)) return true;
+      
+      try {
+        // Get user's roles
+        const userRoles = await env.EVENT_TRACK_DB.prepare(`
+          SELECT role_id FROM rbac_user_roles WHERE discord_id = ?
+        `).bind(userId).all();
+        
+        const roleIds = (userRoles.results || []).map(r => r.role_id);
+        if (roleIds.length === 0) return false;
+        
+        // Check if any of user's roles have the permission
+        const placeholders = roleIds.map(() => '?').join(',');
+        const hasPermission = await env.EVENT_TRACK_DB.prepare(`
+          SELECT 1 FROM rbac_role_permissions 
+          WHERE role_id IN (${placeholders}) AND permission_id = ?
+          LIMIT 1
+        `).bind(...roleIds, permissionId).first();
+        
+        return !!hasPermission;
+      } catch (err) {
+        console.error('Error checking RBAC permission:', err);
+        return false;
+      }
+    };
 
     // --- HMAC Token Signing ---
     // Creates cryptographically signed tokens that can't be forged
@@ -4424,9 +4453,9 @@ You don't have permission to view this content. Contact an administrator if you 
       try {
         await initTileEventTables();
         
-        // Rate limit: Non-admin users can only submit once per minute
-        const isAdminUser = ADMIN_USER_IDS.includes(user.userId);
-        if (!isAdminUser) {
+        // Rate limit: Users without 'approve_submissions' permission can only submit once per minute
+        const canBypassRateLimit = await hasRbacPermission(user.userId, 'approve_submissions');
+        if (!canBypassRateLimit) {
           const lastSubmission = await env.EVENT_TRACK_DB.prepare(`
             SELECT submitted_at FROM tile_submissions 
             WHERE discord_id = ? 
