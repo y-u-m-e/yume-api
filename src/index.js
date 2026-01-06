@@ -1459,6 +1459,17 @@ export default {
                 VALUES (?, ?, ?, ?)
               `).bind(user.id, user.username, user.global_name, user.avatar).run();
               console.log(`Registered new event user: ${user.username} (${user.id})`);
+              
+              // Auto-assign event_participant role to new users from events site
+              try {
+                await env.EVENT_TRACK_DB.prepare(`
+                  INSERT OR IGNORE INTO rbac_user_roles (discord_id, role_id, granted_by, granted_at)
+                  VALUES (?, 'event_participant', 'system', CURRENT_TIMESTAMP)
+                `).bind(user.id).run();
+                console.log(`Assigned event_participant role to: ${user.username} (${user.id})`);
+              } catch (roleErr) {
+                console.error("Failed to assign event_participant role:", roleErr);
+              }
             }
           } catch (regErr) {
             // Don't block login if registration fails
@@ -1762,6 +1773,7 @@ export default {
         const existingRoles = await env.EVENT_TRACK_DB.prepare('SELECT COUNT(*) as count FROM rbac_roles').first();
         if (!existingRoles || existingRoles.count === 0) {
           const defaultRoles = [
+            ['event_participant', 'Event Participant', 'Can participate in tile events', '#f97316', -10, 0],
             ['member', 'Member', 'Basic clan member access', '#6b7280', 0, 1],
             ['clan_officer', 'Clan Officer', 'Officers with attendance tracking', '#10b981', 10, 0],
             ['event_host', 'Event Host', 'Can host and manage events', '#f59e0b', 20, 0],
@@ -1776,6 +1788,8 @@ export default {
           
           // Seed role permissions
           const rolePerms = [
+            // Event Participant - can participate in events (auto-assigned to events site users)
+            ['event_participant', 'view_architecture'],
             // Member - basic access
             ['member', 'view_architecture'],
             // Clan Officer - attendance
@@ -1824,6 +1838,15 @@ export default {
             ).bind(roleId, permId).run();
           }
         }
+        
+        // Ensure event_participant role exists (migration for existing deployments)
+        await env.EVENT_TRACK_DB.prepare(
+          `INSERT OR IGNORE INTO rbac_roles (id, name, description, color, priority, is_default) 
+           VALUES ('event_participant', 'Event Participant', 'Can participate in tile events', '#f97316', -10, 0)`
+        ).run();
+        await env.EVENT_TRACK_DB.prepare(
+          `INSERT OR IGNORE INTO rbac_role_permissions (role_id, permission_id) VALUES ('event_participant', 'view_architecture')`
+        ).run();
         
         const result = await env.EVENT_TRACK_DB.prepare(`
           SELECT * FROM admin_users ORDER BY is_admin DESC, created_at DESC
