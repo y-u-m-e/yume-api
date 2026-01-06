@@ -176,6 +176,734 @@ async function readGoogleSheetPublic(spreadsheetId, sheetName) {
   return rows;
 }
 
+// =============================================================================
+// OSRS MULTI-API AUTOMATION SYSTEM
+// =============================================================================
+// Unified automation system for OSRS data from multiple sources:
+// - GroupIron.men (GIM shared storage, members)
+// - Wise Old Man (player stats, XP gains, competitions)
+// - RuneProfile (collection log, achievements)
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// OSRS API CONFIGURATION
+// -----------------------------------------------------------------------------
+
+const OSRS_APIS = {
+  GROUPIRON: {
+    name: "GroupIron.men",
+    baseUrl: "https://groupiron.men/api",
+    description: "Group Ironman shared storage and member tracking"
+  },
+  WISEOLDMAN: {
+    name: "Wise Old Man",
+    baseUrl: "https://api.wiseoldman.net/v2",
+    description: "Player stats, XP tracking, achievements, competitions",
+    rateLimit: "20 req/60s (100 with API key)"
+  },
+  RUNEPROFILE: {
+    name: "RuneProfile",
+    baseUrl: "https://runeprofile.com/api",
+    description: "Collection log progress, achievement tracking"
+  }
+};
+
+// Cache configuration (per-source)
+const osrsApiCache = {
+  groupiron: { data: null, timestamp: 0, ttl: 30000 },    // 30 sec
+  wiseoldman: { data: {}, timestamp: {}, ttl: 60000 },   // 60 sec (respect rate limits)
+  runeprofile: { data: {}, timestamp: {}, ttl: 60000 }   // 60 sec
+};
+
+// -----------------------------------------------------------------------------
+// OSRS DATABASE INITIALIZATION
+// -----------------------------------------------------------------------------
+
+async function initOsrsTables(db) {
+  // Automation rules (supports all API sources)
+  await db.prepare(`
+    CREATE TABLE IF NOT EXISTS osrs_rules (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      description TEXT,
+      enabled INTEGER DEFAULT 1,
+      data_source TEXT NOT NULL,
+      trigger_type TEXT NOT NULL,
+      trigger_config TEXT NOT NULL,
+      action_type TEXT NOT NULL,
+      action_config TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      last_triggered_at TEXT,
+      trigger_count INTEGER DEFAULT 0
+    )
+  `).run();
+
+  // State tracking (for change detection)
+  await db.prepare(`
+    CREATE TABLE IF NOT EXISTS osrs_state (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `).run();
+
+  // Execution logs
+  await db.prepare(`
+    CREATE TABLE IF NOT EXISTS osrs_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      rule_id INTEGER,
+      rule_name TEXT,
+      data_source TEXT,
+      trigger_type TEXT,
+      trigger_data TEXT,
+      action_type TEXT,
+      action_result TEXT,
+      success INTEGER,
+      error_message TEXT,
+      executed_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `).run();
+
+  // Player watchlist (track specific players across APIs)
+  await db.prepare(`
+    CREATE TABLE IF NOT EXISTS osrs_watchlist (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL,
+      data_sources TEXT DEFAULT '["WISEOLDMAN"]',
+      notify_webhook TEXT,
+      added_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(username)
+    )
+  `).run();
+}
+
+// -----------------------------------------------------------------------------
+// WISE OLD MAN API FUNCTIONS
+// -----------------------------------------------------------------------------
+// Docs: https://docs.wiseoldman.net/api
+
+/**
+ * Fetch player details from Wise Old Man
+ * @param {string} username - OSRS username
+ * @param {string} apiKey - Optional WOM API key for higher rate limits
+ */
+async function womGetPlayer(username, apiKey = null) {
+  const cacheKey = `player_${username.toLowerCase()}`;
+  const now = Date.now();
+  
+  if (osrsApiCache.wiseoldman.data[cacheKey] && 
+      (now - osrsApiCache.wiseoldman.timestamp[cacheKey]) < osrsApiCache.wiseoldman.ttl) {
+    return { ...osrsApiCache.wiseoldman.data[cacheKey], _cached: true };
+  }
+  
+  const headers = {
+    "User-Agent": "Yume-OSRS-API/1.0 (api.emuy.gg)",
+    "Accept": "application/json"
+  };
+  if (apiKey) headers["x-api-key"] = apiKey;
+  
+  const response = await fetch(`${OSRS_APIS.WISEOLDMAN.baseUrl}/players/${encodeURIComponent(username)}`, { headers });
+  
+  if (!response.ok) {
+    if (response.status === 404) return { error: "Player not found", username };
+    throw new Error(`WOM API error: ${response.status}`);
+  }
+  
+  const data = await response.json();
+  osrsApiCache.wiseoldman.data[cacheKey] = data;
+  osrsApiCache.wiseoldman.timestamp[cacheKey] = now;
+  
+  return { ...data, _cached: false };
+}
+
+/**
+ * Update player data on Wise Old Man (triggers a re-fetch from Jagex)
+ */
+async function womUpdatePlayer(username, apiKey = null) {
+  const headers = {
+    "User-Agent": "Yume-OSRS-API/1.0 (api.emuy.gg)",
+    "Content-Type": "application/json"
+  };
+  if (apiKey) headers["x-api-key"] = apiKey;
+  
+  const response = await fetch(`${OSRS_APIS.WISEOLDMAN.baseUrl}/players/${encodeURIComponent(username)}`, {
+    method: "POST",
+    headers
+  });
+  
+  if (!response.ok) throw new Error(`WOM update failed: ${response.status}`);
+  return response.json();
+}
+
+/**
+ * Get player's recent gains (XP/level changes)
+ */
+async function womGetPlayerGains(username, period = "week", apiKey = null) {
+  const headers = { "User-Agent": "Yume-OSRS-API/1.0 (api.emuy.gg)" };
+  if (apiKey) headers["x-api-key"] = apiKey;
+  
+  const response = await fetch(
+    `${OSRS_APIS.WISEOLDMAN.baseUrl}/players/${encodeURIComponent(username)}/gained?period=${period}`,
+    { headers }
+  );
+  
+  if (!response.ok) throw new Error(`WOM gains error: ${response.status}`);
+  return response.json();
+}
+
+/**
+ * Get player's achievement progress
+ */
+async function womGetPlayerAchievements(username, apiKey = null) {
+  const headers = { "User-Agent": "Yume-OSRS-API/1.0 (api.emuy.gg)" };
+  if (apiKey) headers["x-api-key"] = apiKey;
+  
+  const response = await fetch(
+    `${OSRS_APIS.WISEOLDMAN.baseUrl}/players/${encodeURIComponent(username)}/achievements/progress`,
+    { headers }
+  );
+  
+  if (!response.ok) throw new Error(`WOM achievements error: ${response.status}`);
+  return response.json();
+}
+
+/**
+ * Get WOM group details
+ */
+async function womGetGroup(groupId, apiKey = null) {
+  const headers = { "User-Agent": "Yume-OSRS-API/1.0 (api.emuy.gg)" };
+  if (apiKey) headers["x-api-key"] = apiKey;
+  
+  const response = await fetch(`${OSRS_APIS.WISEOLDMAN.baseUrl}/groups/${groupId}`, { headers });
+  
+  if (!response.ok) throw new Error(`WOM group error: ${response.status}`);
+  return response.json();
+}
+
+/**
+ * Get WOM group members with stats
+ */
+async function womGetGroupMembers(groupId, apiKey = null) {
+  const headers = { "User-Agent": "Yume-OSRS-API/1.0 (api.emuy.gg)" };
+  if (apiKey) headers["x-api-key"] = apiKey;
+  
+  const response = await fetch(`${OSRS_APIS.WISEOLDMAN.baseUrl}/groups/${groupId}/members`, { headers });
+  
+  if (!response.ok) throw new Error(`WOM group members error: ${response.status}`);
+  return response.json();
+}
+
+/**
+ * Search for players on WOM
+ */
+async function womSearchPlayers(query, apiKey = null) {
+  const headers = { "User-Agent": "Yume-OSRS-API/1.0 (api.emuy.gg)" };
+  if (apiKey) headers["x-api-key"] = apiKey;
+  
+  const response = await fetch(
+    `${OSRS_APIS.WISEOLDMAN.baseUrl}/players/search?username=${encodeURIComponent(query)}`,
+    { headers }
+  );
+  
+  if (!response.ok) throw new Error(`WOM search error: ${response.status}`);
+  return response.json();
+}
+
+// -----------------------------------------------------------------------------
+// RUNEPROFILE API FUNCTIONS
+// -----------------------------------------------------------------------------
+
+/**
+ * Fetch player profile from RuneProfile
+ * Note: API structure may vary - adjust endpoints as needed
+ */
+async function runeprofileGetPlayer(username) {
+  const cacheKey = `rp_${username.toLowerCase()}`;
+  const now = Date.now();
+  
+  if (osrsApiCache.runeprofile.data[cacheKey] &&
+      (now - osrsApiCache.runeprofile.timestamp[cacheKey]) < osrsApiCache.runeprofile.ttl) {
+    return { ...osrsApiCache.runeprofile.data[cacheKey], _cached: true };
+  }
+  
+  const response = await fetch(`${OSRS_APIS.RUNEPROFILE.baseUrl}/profile/${encodeURIComponent(username)}`, {
+    headers: {
+      "User-Agent": "Yume-OSRS-API/1.0 (api.emuy.gg)",
+      "Accept": "application/json"
+    }
+  });
+  
+  if (!response.ok) {
+    if (response.status === 404) return { error: "Profile not found", username };
+    throw new Error(`RuneProfile API error: ${response.status}`);
+  }
+  
+  const data = await response.json();
+  osrsApiCache.runeprofile.data[cacheKey] = data;
+  osrsApiCache.runeprofile.timestamp[cacheKey] = now;
+  
+  return { ...data, _cached: false };
+}
+
+/**
+ * Get collection log progress from RuneProfile
+ */
+async function runeprofileGetCollectionLog(username) {
+  const response = await fetch(`${OSRS_APIS.RUNEPROFILE.baseUrl}/collectionlog/${encodeURIComponent(username)}`, {
+    headers: { "User-Agent": "Yume-OSRS-API/1.0 (api.emuy.gg)" }
+  });
+  
+  if (!response.ok) throw new Error(`RuneProfile clog error: ${response.status}`);
+  return response.json();
+}
+
+// -----------------------------------------------------------------------------
+// GROUPIRON API FUNCTIONS
+// -----------------------------------------------------------------------------
+
+async function groupironGetGroup(token) {
+  const now = Date.now();
+  
+  if (osrsApiCache.groupiron.data && (now - osrsApiCache.groupiron.timestamp) < osrsApiCache.groupiron.ttl) {
+    return { ...osrsApiCache.groupiron.data, _cached: true };
+  }
+  
+  const response = await fetch(`${OSRS_APIS.GROUPIRON.baseUrl}/group/${token}`, {
+    headers: { "User-Agent": "Yume-OSRS-API/1.0 (api.emuy.gg)" }
+  });
+  
+  if (!response.ok) throw new Error(`GroupIron API error: ${response.status}`);
+  
+  const data = await response.json();
+  osrsApiCache.groupiron.data = data;
+  osrsApiCache.groupiron.timestamp = now;
+  
+  return { ...data, _cached: false };
+}
+
+// Data extractors for GroupIron
+function extractGimStorage(data) {
+  const storage = data.sharedBank || data.storage || data.groupStorage || [];
+  return storage.map(item => ({
+    itemId: item.id || item.itemId,
+    name: item.name || `Item #${item.id}`,
+    quantity: item.quantity || item.amount || 1
+  }));
+}
+
+function extractGimMembers(data) {
+  const members = data.members || data.players || [];
+  return members.map(m => ({
+    name: m.name || m.username || m.rsn,
+    online: m.online || m.isOnline || false,
+    lastSeen: m.lastSeen || null
+  }));
+}
+
+// -----------------------------------------------------------------------------
+// OSRS STATE MANAGEMENT (for change detection)
+// -----------------------------------------------------------------------------
+
+async function getOsrsState(db, key) {
+  const result = await db.prepare(`SELECT value FROM osrs_state WHERE key = ?`).bind(key).first();
+  return result ? JSON.parse(result.value) : null;
+}
+
+async function setOsrsState(db, key, value) {
+  await db.prepare(`
+    INSERT INTO osrs_state (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP
+  `).bind(key, JSON.stringify(value), JSON.stringify(value)).run();
+}
+
+// -----------------------------------------------------------------------------
+// OSRS TRIGGER TYPES
+// -----------------------------------------------------------------------------
+
+const OSRS_TRIGGER_TYPES = {
+  // === GROUPIRON TRIGGERS ===
+  GIM_ITEM_ACQUIRED: {
+    source: "GROUPIRON",
+    name: "GIM Item Acquired",
+    description: "Item added to GIM shared storage",
+    config: { itemId: "number", itemName: "string", minQuantity: "number" },
+    evaluate: (config, current, previous) => {
+      const curr = extractGimStorage(current);
+      const prev = extractGimStorage(previous || {});
+      const target = curr.find(i => 
+        (config.itemId && i.itemId === config.itemId) ||
+        (config.itemName && i.name?.toLowerCase().includes(config.itemName.toLowerCase()))
+      );
+      const prevItem = prev.find(i => i.itemId === target?.itemId);
+      
+      if (target && target.quantity >= (config.minQuantity || 1) && 
+          (!prevItem || target.quantity > prevItem.quantity)) {
+        return { triggered: true, data: { item: target, previousQty: prevItem?.quantity || 0 } };
+      }
+      return { triggered: false };
+    }
+  },
+
+  GIM_ITEM_REMOVED: {
+    source: "GROUPIRON",
+    name: "GIM Item Removed",
+    description: "Item removed from GIM shared storage",
+    config: { itemId: "number", itemName: "string" },
+    evaluate: (config, current, previous) => {
+      const curr = extractGimStorage(current);
+      const prev = extractGimStorage(previous || {});
+      const prevItem = prev.find(i =>
+        (config.itemId && i.itemId === config.itemId) ||
+        (config.itemName && i.name?.toLowerCase().includes(config.itemName.toLowerCase()))
+      );
+      const currItem = curr.find(i => i.itemId === prevItem?.itemId);
+      
+      if (prevItem && (!currItem || currItem.quantity < prevItem.quantity)) {
+        return { triggered: true, data: { item: prevItem, removedQty: prevItem.quantity - (currItem?.quantity || 0) } };
+      }
+      return { triggered: false };
+    }
+  },
+
+  GIM_PLAYER_ONLINE: {
+    source: "GROUPIRON",
+    name: "GIM Player Online",
+    description: "GIM member comes online",
+    config: { playerName: "string" },
+    evaluate: (config, current, previous) => {
+      const curr = extractGimMembers(current);
+      const prev = extractGimMembers(previous || {});
+      
+      for (const m of curr) {
+        const p = prev.find(x => x.name === m.name);
+        if (m.online && (!p || !p.online)) {
+          if (!config.playerName || m.name.toLowerCase().includes(config.playerName.toLowerCase())) {
+            return { triggered: true, data: { player: m.name, status: "online" } };
+          }
+        }
+      }
+      return { triggered: false };
+    }
+  },
+
+  GIM_PLAYER_OFFLINE: {
+    source: "GROUPIRON",
+    name: "GIM Player Offline",
+    description: "GIM member goes offline",
+    config: { playerName: "string" },
+    evaluate: (config, current, previous) => {
+      const curr = extractGimMembers(current);
+      const prev = extractGimMembers(previous || {});
+      
+      for (const p of prev) {
+        const c = curr.find(x => x.name === p.name);
+        if (p.online && (!c || !c.online)) {
+          if (!config.playerName || p.name.toLowerCase().includes(config.playerName.toLowerCase())) {
+            return { triggered: true, data: { player: p.name, status: "offline" } };
+          }
+        }
+      }
+      return { triggered: false };
+    }
+  },
+
+  GIM_ANY_ITEM_ADDED: {
+    source: "GROUPIRON",
+    name: "GIM Any Item Added",
+    description: "Any new item appears in shared storage",
+    config: {},
+    evaluate: (config, current, previous) => {
+      const curr = extractGimStorage(current);
+      const prev = extractGimStorage(previous || {});
+      const prevIds = new Set(prev.map(i => i.itemId));
+      const newItems = curr.filter(i => !prevIds.has(i.itemId));
+      
+      if (newItems.length > 0) {
+        return { triggered: true, data: { newItems } };
+      }
+      return { triggered: false };
+    }
+  },
+
+  // === WISE OLD MAN TRIGGERS ===
+  WOM_LEVEL_UP: {
+    source: "WISEOLDMAN",
+    name: "Level Up",
+    description: "Player gains a level in any or specific skill",
+    config: { username: "string", skill: "string", minLevel: "number" },
+    evaluate: (config, current, previous) => {
+      if (!previous) return { triggered: false };
+      
+      const skills = ["attack", "defence", "strength", "hitpoints", "ranged", "prayer", 
+                      "magic", "cooking", "woodcutting", "fletching", "fishing", "firemaking",
+                      "crafting", "smithing", "mining", "herblore", "agility", "thieving",
+                      "slayer", "farming", "runecraft", "hunter", "construction"];
+      
+      const currSnap = current.latestSnapshot?.data?.skills || {};
+      const prevSnap = previous.latestSnapshot?.data?.skills || {};
+      
+      for (const skill of skills) {
+        if (config.skill && config.skill.toLowerCase() !== skill) continue;
+        
+        const currLevel = currSnap[skill]?.level || 0;
+        const prevLevel = prevSnap[skill]?.level || 0;
+        
+        if (currLevel > prevLevel && currLevel >= (config.minLevel || 1)) {
+          return {
+            triggered: true,
+            data: {
+              username: current.username || current.displayName,
+              skill,
+              previousLevel: prevLevel,
+              newLevel: currLevel
+            }
+          };
+        }
+      }
+      return { triggered: false };
+    }
+  },
+
+  WOM_XP_GAINED: {
+    source: "WISEOLDMAN",
+    name: "XP Threshold",
+    description: "Player gains X amount of XP in a skill",
+    config: { username: "string", skill: "string", xpThreshold: "number" },
+    evaluate: (config, current, previous) => {
+      if (!previous) return { triggered: false };
+      
+      const currSnap = current.latestSnapshot?.data?.skills || {};
+      const prevSnap = previous.latestSnapshot?.data?.skills || {};
+      
+      const skill = config.skill?.toLowerCase() || "overall";
+      const currXp = currSnap[skill]?.experience || 0;
+      const prevXp = prevSnap[skill]?.experience || 0;
+      const gained = currXp - prevXp;
+      
+      if (gained >= (config.xpThreshold || 100000)) {
+        return {
+          triggered: true,
+          data: {
+            username: current.username,
+            skill,
+            xpGained: gained,
+            totalXp: currXp
+          }
+        };
+      }
+      return { triggered: false };
+    }
+  },
+
+  WOM_BOSS_KC: {
+    source: "WISEOLDMAN",
+    name: "Boss KC Milestone",
+    description: "Player reaches KC milestone on a boss",
+    config: { username: "string", boss: "string", kcMilestone: "number" },
+    evaluate: (config, current, previous) => {
+      if (!previous) return { triggered: false };
+      
+      const currBosses = current.latestSnapshot?.data?.bosses || {};
+      const prevBosses = previous.latestSnapshot?.data?.bosses || {};
+      
+      const bossName = config.boss?.toLowerCase();
+      if (!bossName) return { triggered: false };
+      
+      const currKc = currBosses[bossName]?.kills || 0;
+      const prevKc = prevBosses[bossName]?.kills || 0;
+      const milestone = config.kcMilestone || 100;
+      
+      if (currKc >= milestone && prevKc < milestone) {
+        return {
+          triggered: true,
+          data: {
+            username: current.username,
+            boss: bossName,
+            kc: currKc,
+            milestone
+          }
+        };
+      }
+      return { triggered: false };
+    }
+  },
+
+  WOM_TOTAL_LEVEL: {
+    source: "WISEOLDMAN",
+    name: "Total Level Milestone",
+    description: "Player reaches total level milestone",
+    config: { username: "string", totalLevel: "number" },
+    evaluate: (config, current, previous) => {
+      const currTotal = current.latestSnapshot?.data?.skills?.overall?.level || 0;
+      const prevTotal = previous?.latestSnapshot?.data?.skills?.overall?.level || 0;
+      const milestone = config.totalLevel || 2000;
+      
+      if (currTotal >= milestone && prevTotal < milestone) {
+        return {
+          triggered: true,
+          data: { username: current.username, totalLevel: currTotal, milestone }
+        };
+      }
+      return { triggered: false };
+    }
+  },
+
+  // === RUNEPROFILE TRIGGERS ===
+  RP_CLOG_ITEM: {
+    source: "RUNEPROFILE",
+    name: "Collection Log Item",
+    description: "Player obtains a new collection log item",
+    config: { username: "string", itemName: "string", category: "string" },
+    evaluate: (config, current, previous) => {
+      const currItems = current.collectionLog?.items || [];
+      const prevItems = previous?.collectionLog?.items || [];
+      const prevIds = new Set(prevItems.map(i => i.id));
+      
+      let newItems = currItems.filter(i => !prevIds.has(i.id));
+      
+      if (config.itemName) {
+        newItems = newItems.filter(i => i.name?.toLowerCase().includes(config.itemName.toLowerCase()));
+      }
+      if (config.category) {
+        newItems = newItems.filter(i => i.category?.toLowerCase().includes(config.category.toLowerCase()));
+      }
+      
+      if (newItems.length > 0) {
+        return {
+          triggered: true,
+          data: { username: current.username, newItems }
+        };
+      }
+      return { triggered: false };
+    }
+  },
+
+  RP_CLOG_SLOTS: {
+    source: "RUNEPROFILE",
+    name: "Collection Log Slots Milestone",
+    description: "Player reaches X total collection log slots",
+    config: { username: "string", slotCount: "number" },
+    evaluate: (config, current, previous) => {
+      const currSlots = current.collectionLog?.totalObtained || 0;
+      const prevSlots = previous?.collectionLog?.totalObtained || 0;
+      const milestone = config.slotCount || 500;
+      
+      if (currSlots >= milestone && prevSlots < milestone) {
+        return {
+          triggered: true,
+          data: { username: current.username, slots: currSlots, milestone }
+        };
+      }
+      return { triggered: false };
+    }
+  }
+};
+
+// -----------------------------------------------------------------------------
+// OSRS ACTION TYPES
+// -----------------------------------------------------------------------------
+
+function replaceOsrsVars(template, data) {
+  if (!template) return template;
+  return template.replace(/\{\{(\w+(?:\.\w+)*)\}\}/g, (match, path) => {
+    let value = data;
+    for (const key of path.split(".")) value = value?.[key];
+    return value !== undefined ? String(value) : match;
+  });
+}
+
+const OSRS_ACTION_TYPES = {
+  DISCORD_WEBHOOK: {
+    name: "Discord Webhook",
+    description: "Send message to Discord",
+    config: { webhookUrl: "string", content: "string", embedTitle: "string", embedColor: "number", embedDescription: "string" },
+    execute: async (config, data) => {
+      const payload = { username: "Yume OSRS Bot" };
+      
+      if (config.content) payload.content = replaceOsrsVars(config.content, data);
+      
+      if (config.embedTitle) {
+        payload.embeds = [{
+          title: replaceOsrsVars(config.embedTitle, data),
+          description: replaceOsrsVars(config.embedDescription, data) || undefined,
+          color: config.embedColor || 0x00ff00,
+          timestamp: new Date().toISOString()
+        }];
+      }
+      
+      const res = await fetch(config.webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      return { success: res.ok, status: res.status };
+    }
+  },
+
+  HTTP_POST: {
+    name: "HTTP POST",
+    description: "Send data to any URL",
+    config: { url: "string", body: "string", headers: "object" },
+    execute: async (config, data) => {
+      const res = await fetch(replaceOsrsVars(config.url, data), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(config.headers || {}) },
+        body: replaceOsrsVars(config.body, data)
+      });
+      return { success: res.ok, status: res.status };
+    }
+  },
+
+  LOG_ONLY: {
+    name: "Log Only",
+    description: "Just log the event (no external action)",
+    config: {},
+    execute: async () => ({ success: true, logged: true })
+  }
+};
+
+// -----------------------------------------------------------------------------
+// OSRS RULE ENGINE
+// -----------------------------------------------------------------------------
+
+async function evaluateOsrsRules(db, source, current, previous, env) {
+  const results = [];
+  const { results: rules } = await db.prepare(
+    `SELECT * FROM osrs_rules WHERE enabled = 1 AND data_source = ?`
+  ).bind(source).all();
+  
+  for (const rule of rules) {
+    try {
+      const trigger = OSRS_TRIGGER_TYPES[rule.trigger_type];
+      if (!trigger) continue;
+      
+      const triggerConfig = JSON.parse(rule.trigger_config);
+      const evaluation = trigger.evaluate(triggerConfig, current, previous);
+      
+      if (evaluation.triggered) {
+        const action = OSRS_ACTION_TYPES[rule.action_type];
+        const actionConfig = JSON.parse(rule.action_config);
+        const actionResult = await action.execute(actionConfig, evaluation.data);
+        
+        await db.prepare(`
+          UPDATE osrs_rules SET last_triggered_at = CURRENT_TIMESTAMP, trigger_count = trigger_count + 1 WHERE id = ?
+        `).bind(rule.id).run();
+        
+        await db.prepare(`
+          INSERT INTO osrs_logs (rule_id, rule_name, data_source, trigger_type, trigger_data, action_type, action_result, success)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(rule.id, rule.name, source, rule.trigger_type, JSON.stringify(evaluation.data),
+                rule.action_type, JSON.stringify(actionResult), actionResult.success ? 1 : 0).run();
+        
+        results.push({ rule: rule.name, triggered: true, data: evaluation.data, action: actionResult });
+      }
+    } catch (err) {
+      results.push({ rule: rule.name, error: err.message });
+    }
+  }
+  return results;
+}
+
 export default {
   async fetch(request, env, ctx) {
     const { method } = request;
@@ -3696,6 +4424,33 @@ You don't have permission to view this content. Contact an administrator if you 
       try {
         await initTileEventTables();
         
+        // Rate limit: Non-admin users can only submit once per minute
+        const isAdminUser = ADMIN_USER_IDS.includes(user.userId);
+        if (!isAdminUser) {
+          const lastSubmission = await env.EVENT_TRACK_DB.prepare(`
+            SELECT submitted_at FROM tile_submissions 
+            WHERE discord_id = ? 
+            ORDER BY submitted_at DESC 
+            LIMIT 1
+          `).bind(user.userId).first();
+          
+          if (lastSubmission) {
+            const lastSubmitTime = new Date(lastSubmission.submitted_at).getTime();
+            const now = Date.now();
+            const secondsSinceLastSubmit = (now - lastSubmitTime) / 1000;
+            
+            if (secondsSinceLastSubmit < 60) {
+              const waitTime = Math.ceil(60 - secondsSinceLastSubmit);
+              return new Response(JSON.stringify({ 
+                error: `Rate limited. Please wait ${waitTime} seconds before submitting again.` 
+              }), {
+                status: 429,
+                headers: { ...corsHeaders, "Content-Type": "application/json" }
+              });
+            }
+          }
+        }
+        
         // Check if user has joined this event
         const progress = await env.EVENT_TRACK_DB.prepare(`
           SELECT * FROM tile_event_progress WHERE event_id = ? AND discord_id = ?
@@ -5713,6 +6468,715 @@ You don't have permission to view this content. Contact an administrator if you 
           headers: { ...corsHeaders, "Content-Type": "application/json" }
         });
       }
+    }
+
+    // ==========================================================================
+    // OSRS MULTI-API ENDPOINTS
+    // ==========================================================================
+    // Data sources: GroupIron.men, Wise Old Man, RuneProfile
+    // Features: Data fetching, automated rules (IFTTT-style), change detection
+
+    // --- GroupIron.men Endpoints ---
+
+    /**
+     * GET /osrs/groupiron - Fetch full group data from groupiron.men
+     * Query params:
+     *   - token: Group UUID (defaults to env.GROUPIRON_TOKEN)
+     *   - refresh: Force cache refresh if "true"
+     */
+    if (method === "GET" && url.pathname === "/osrs/groupiron") {
+      try {
+        const token = url.searchParams.get("token") || env.GROUPIRON_TOKEN;
+        if (!token) {
+          return new Response(JSON.stringify({ 
+            error: "No group token",
+            message: "Set GROUPIRON_TOKEN env var or pass ?token=xxx"
+          }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+        
+        // Clear cache if refresh requested
+        if (url.searchParams.get("refresh") === "true") {
+          osrsApiCache.groupiron.timestamp = 0;
+        }
+        
+        const data = await groupironGetGroup(token);
+        return new Response(JSON.stringify(data), { 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), { 
+          status: 502, 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      }
+    }
+
+    /**
+     * GET /osrs/groupiron/storage - Get shared bank items
+     */
+    if (method === "GET" && url.pathname === "/osrs/groupiron/storage") {
+      try {
+        const token = url.searchParams.get("token") || env.GROUPIRON_TOKEN;
+        if (!token) {
+          return new Response(JSON.stringify({ error: "No token" }), { 
+            status: 400, 
+            headers: { ...corsHeaders, "Content-Type": "application/json" } 
+          });
+        }
+        const data = await groupironGetGroup(token);
+        return new Response(JSON.stringify({ 
+          items: extractGimStorage(data),
+          _fetchedAt: new Date().toISOString()
+        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), { 
+          status: 502, 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      }
+    }
+
+    /**
+     * GET /osrs/groupiron/members - Get GIM members with online status
+     */
+    if (method === "GET" && url.pathname === "/osrs/groupiron/members") {
+      try {
+        const token = url.searchParams.get("token") || env.GROUPIRON_TOKEN;
+        if (!token) {
+          return new Response(JSON.stringify({ error: "No token" }), { 
+            status: 400, 
+            headers: { ...corsHeaders, "Content-Type": "application/json" } 
+          });
+        }
+        const data = await groupironGetGroup(token);
+        return new Response(JSON.stringify({ 
+          members: extractGimMembers(data),
+          _fetchedAt: new Date().toISOString()
+        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), { 
+          status: 502, 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      }
+    }
+
+    // --- Wise Old Man Endpoints ---
+
+    /**
+     * GET /osrs/wom/player - Get player details from WOM
+     * Query: ?username=PlayerName
+     */
+    if (method === "GET" && url.pathname === "/osrs/wom/player") {
+      try {
+        const username = url.searchParams.get("username");
+        if (!username) {
+          return new Response(JSON.stringify({ error: "No username provided" }), { 
+            status: 400, 
+            headers: { ...corsHeaders, "Content-Type": "application/json" } 
+          });
+        }
+        const data = await womGetPlayer(username, env.WOM_API_KEY);
+        return new Response(JSON.stringify(data), { 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), { 
+          status: 502, 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      }
+    }
+
+    /**
+     * POST /osrs/wom/player/update - Update player on WOM (re-fetch from Jagex)
+     * Query: ?username=PlayerName
+     */
+    if (method === "POST" && url.pathname === "/osrs/wom/player/update") {
+      try {
+        const username = url.searchParams.get("username");
+        if (!username) {
+          return new Response(JSON.stringify({ error: "No username provided" }), { 
+            status: 400, 
+            headers: { ...corsHeaders, "Content-Type": "application/json" } 
+          });
+        }
+        const data = await womUpdatePlayer(username, env.WOM_API_KEY);
+        return new Response(JSON.stringify(data), { 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), { 
+          status: 502, 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      }
+    }
+
+    /**
+     * GET /osrs/wom/player/gains - Get player's XP gains
+     * Query: ?username=PlayerName&period=week (day, week, month, year)
+     */
+    if (method === "GET" && url.pathname === "/osrs/wom/player/gains") {
+      try {
+        const username = url.searchParams.get("username");
+        const period = url.searchParams.get("period") || "week";
+        if (!username) {
+          return new Response(JSON.stringify({ error: "No username provided" }), { 
+            status: 400, 
+            headers: { ...corsHeaders, "Content-Type": "application/json" } 
+          });
+        }
+        const data = await womGetPlayerGains(username, period, env.WOM_API_KEY);
+        return new Response(JSON.stringify(data), { 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), { 
+          status: 502, 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      }
+    }
+
+    /**
+     * GET /osrs/wom/player/achievements - Get player's achievement progress
+     * Query: ?username=PlayerName
+     */
+    if (method === "GET" && url.pathname === "/osrs/wom/player/achievements") {
+      try {
+        const username = url.searchParams.get("username");
+        if (!username) {
+          return new Response(JSON.stringify({ error: "No username provided" }), { 
+            status: 400, 
+            headers: { ...corsHeaders, "Content-Type": "application/json" } 
+          });
+        }
+        const data = await womGetPlayerAchievements(username, env.WOM_API_KEY);
+        return new Response(JSON.stringify(data), { 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), { 
+          status: 502, 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      }
+    }
+
+    /**
+     * GET /osrs/wom/group - Get WOM group details
+     * Query: ?id=GroupId
+     */
+    if (method === "GET" && url.pathname === "/osrs/wom/group") {
+      try {
+        const groupId = url.searchParams.get("id");
+        if (!groupId) {
+          return new Response(JSON.stringify({ error: "No group id provided" }), { 
+            status: 400, 
+            headers: { ...corsHeaders, "Content-Type": "application/json" } 
+          });
+        }
+        const data = await womGetGroup(groupId, env.WOM_API_KEY);
+        return new Response(JSON.stringify(data), { 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), { 
+          status: 502, 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      }
+    }
+
+    /**
+     * GET /osrs/wom/group/members - Get WOM group members
+     * Query: ?id=GroupId
+     */
+    if (method === "GET" && url.pathname === "/osrs/wom/group/members") {
+      try {
+        const groupId = url.searchParams.get("id");
+        if (!groupId) {
+          return new Response(JSON.stringify({ error: "No group id provided" }), { 
+            status: 400, 
+            headers: { ...corsHeaders, "Content-Type": "application/json" } 
+          });
+        }
+        const data = await womGetGroupMembers(groupId, env.WOM_API_KEY);
+        return new Response(JSON.stringify(data), { 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), { 
+          status: 502, 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      }
+    }
+
+    /**
+     * GET /osrs/wom/search - Search for players on WOM
+     * Query: ?q=SearchTerm
+     */
+    if (method === "GET" && url.pathname === "/osrs/wom/search") {
+      try {
+        const query = url.searchParams.get("q");
+        if (!query) {
+          return new Response(JSON.stringify({ error: "No search query provided" }), { 
+            status: 400, 
+            headers: { ...corsHeaders, "Content-Type": "application/json" } 
+          });
+        }
+        const data = await womSearchPlayers(query, env.WOM_API_KEY);
+        return new Response(JSON.stringify(data), { 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), { 
+          status: 502, 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      }
+    }
+
+    // --- RuneProfile Endpoints ---
+
+    /**
+     * GET /osrs/runeprofile/player - Get player profile from RuneProfile
+     * Query: ?username=PlayerName
+     */
+    if (method === "GET" && url.pathname === "/osrs/runeprofile/player") {
+      try {
+        const username = url.searchParams.get("username");
+        if (!username) {
+          return new Response(JSON.stringify({ error: "No username provided" }), { 
+            status: 400, 
+            headers: { ...corsHeaders, "Content-Type": "application/json" } 
+          });
+        }
+        const data = await runeprofileGetPlayer(username);
+        return new Response(JSON.stringify(data), { 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), { 
+          status: 502, 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      }
+    }
+
+    /**
+     * GET /osrs/runeprofile/clog - Get collection log from RuneProfile
+     * Query: ?username=PlayerName
+     */
+    if (method === "GET" && url.pathname === "/osrs/runeprofile/clog") {
+      try {
+        const username = url.searchParams.get("username");
+        if (!username) {
+          return new Response(JSON.stringify({ error: "No username provided" }), { 
+            status: 400, 
+            headers: { ...corsHeaders, "Content-Type": "application/json" } 
+          });
+        }
+        const data = await runeprofileGetCollectionLog(username);
+        return new Response(JSON.stringify(data), { 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), { 
+          status: 502, 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      }
+    }
+
+    // --- OSRS Automation Endpoints ---
+
+    /**
+     * POST /osrs/poll - Poll data sources and evaluate automation rules
+     * Query: ?source=GROUPIRON|WISEOLDMAN|ALL
+     * 
+     * This endpoint:
+     * 1. Fetches current data from the specified source
+     * 2. Compares with previous state (stored in D1)
+     * 3. Evaluates all matching rules
+     * 4. Executes triggered actions
+     * 5. Stores new state
+     */
+    if (method === "POST" && url.pathname === "/osrs/poll") {
+      try {
+        await initOsrsTables(env.EVENT_TRACK_DB);
+        const source = url.searchParams.get("source") || "GROUPIRON";
+        const allResults = [];
+        
+        // Poll GroupIron
+        if (source === "GROUPIRON" || source === "ALL") {
+          const token = env.GROUPIRON_TOKEN;
+          if (token) {
+            const prev = await getOsrsState(env.EVENT_TRACK_DB, "groupiron_last");
+            osrsApiCache.groupiron.timestamp = 0; // Force fresh fetch
+            const curr = await groupironGetGroup(token);
+            const results = await evaluateOsrsRules(env.EVENT_TRACK_DB, "GROUPIRON", curr, prev, env);
+            await setOsrsState(env.EVENT_TRACK_DB, "groupiron_last", curr);
+            allResults.push({ source: "GROUPIRON", results });
+          }
+        }
+        
+        // Poll Wise Old Man for watchlisted players
+        if (source === "WISEOLDMAN" || source === "ALL") {
+          const { results: watchlist } = await env.EVENT_TRACK_DB.prepare(
+            `SELECT * FROM osrs_watchlist`
+          ).all();
+          
+          for (const entry of watchlist || []) {
+            try {
+              const prev = await getOsrsState(env.EVENT_TRACK_DB, `wom_${entry.username}`);
+              const curr = await womGetPlayer(entry.username, env.WOM_API_KEY);
+              const results = await evaluateOsrsRules(env.EVENT_TRACK_DB, "WISEOLDMAN", curr, prev, env);
+              await setOsrsState(env.EVENT_TRACK_DB, `wom_${entry.username}`, curr);
+              allResults.push({ source: "WISEOLDMAN", username: entry.username, results });
+            } catch (e) {
+              allResults.push({ source: "WISEOLDMAN", username: entry.username, error: e.message });
+            }
+          }
+        }
+        
+        return new Response(JSON.stringify({ 
+          polledAt: new Date().toISOString(),
+          results: allResults 
+        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), { 
+          status: 500, 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      }
+    }
+
+    /**
+     * GET /osrs/rules - List automation rules
+     * Query: ?source=GROUPIRON (optional filter)
+     */
+    if (method === "GET" && url.pathname === "/osrs/rules") {
+      try {
+        await initOsrsTables(env.EVENT_TRACK_DB);
+        const source = url.searchParams.get("source");
+        
+        let query = `SELECT * FROM osrs_rules ORDER BY created_at DESC`;
+        let stmt = env.EVENT_TRACK_DB.prepare(query);
+        
+        if (source) {
+          query = `SELECT * FROM osrs_rules WHERE data_source = ? ORDER BY created_at DESC`;
+          stmt = env.EVENT_TRACK_DB.prepare(query).bind(source);
+        }
+        
+        const { results: rules } = await stmt.all();
+        
+        return new Response(JSON.stringify({ 
+          count: rules.length,
+          rules: rules.map(r => ({
+            ...r,
+            trigger_config: JSON.parse(r.trigger_config || "{}"),
+            action_config: JSON.parse(r.action_config || "{}")
+          }))
+        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), { 
+          status: 500, 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      }
+    }
+
+    /**
+     * POST /osrs/rules - Create a new automation rule
+     * Body: {
+     *   name: "Rule Name",
+     *   description: "Optional description",
+     *   data_source: "GROUPIRON|WISEOLDMAN|RUNEPROFILE",
+     *   trigger_type: "GIM_ITEM_ACQUIRED",
+     *   trigger_config: { itemName: "Dragon warhammer" },
+     *   action_type: "DISCORD_WEBHOOK",
+     *   action_config: { webhookUrl: "...", content: "..." }
+     * }
+     */
+    if (method === "POST" && url.pathname === "/osrs/rules") {
+      try {
+        await initOsrsTables(env.EVENT_TRACK_DB);
+        const body = await request.json();
+        const { name, description, data_source, trigger_type, trigger_config, action_type, action_config } = body;
+        
+        // Validate trigger type
+        if (!OSRS_TRIGGER_TYPES[trigger_type]) {
+          const validTriggers = Object.entries(OSRS_TRIGGER_TYPES)
+            .filter(([k, v]) => !data_source || v.source === data_source)
+            .map(([k]) => k);
+          return new Response(JSON.stringify({ 
+            error: "Invalid trigger_type",
+            validTypes: validTriggers
+          }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+        
+        // Validate action type
+        if (!OSRS_ACTION_TYPES[action_type]) {
+          return new Response(JSON.stringify({ 
+            error: "Invalid action_type",
+            validTypes: Object.keys(OSRS_ACTION_TYPES)
+          }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+        
+        // Validate data source matches trigger
+        const trigger = OSRS_TRIGGER_TYPES[trigger_type];
+        if (data_source && trigger.source !== data_source) {
+          return new Response(JSON.stringify({ 
+            error: `Trigger ${trigger_type} requires data_source: ${trigger.source}`
+          }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+        
+        const res = await env.EVENT_TRACK_DB.prepare(`
+          INSERT INTO osrs_rules (name, description, data_source, trigger_type, trigger_config, action_type, action_config)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+          name, 
+          description || "", 
+          data_source || trigger.source, 
+          trigger_type, 
+          JSON.stringify(trigger_config || {}), 
+          action_type, 
+          JSON.stringify(action_config || {})
+        ).run();
+        
+        return new Response(JSON.stringify({ 
+          success: true, 
+          id: res.meta.last_row_id,
+          message: `Rule "${name}" created`
+        }), { status: 201, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), { 
+          status: 500, 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      }
+    }
+
+    /**
+     * PUT /osrs/rules/:id - Update an automation rule
+     */
+    if (method === "PUT" && url.pathname.match(/^\/osrs\/rules\/\d+$/)) {
+      try {
+        await initOsrsTables(env.EVENT_TRACK_DB);
+        const id = url.pathname.split("/").pop();
+        const body = await request.json();
+        const { name, description, enabled, trigger_config, action_config } = body;
+        
+        const updates = [];
+        const values = [];
+        
+        if (name !== undefined) { updates.push("name = ?"); values.push(name); }
+        if (description !== undefined) { updates.push("description = ?"); values.push(description); }
+        if (enabled !== undefined) { updates.push("enabled = ?"); values.push(enabled ? 1 : 0); }
+        if (trigger_config !== undefined) { updates.push("trigger_config = ?"); values.push(JSON.stringify(trigger_config)); }
+        if (action_config !== undefined) { updates.push("action_config = ?"); values.push(JSON.stringify(action_config)); }
+        
+        if (updates.length === 0) {
+          return new Response(JSON.stringify({ error: "No fields to update" }), { 
+            status: 400, 
+            headers: { ...corsHeaders, "Content-Type": "application/json" } 
+          });
+        }
+        
+        values.push(id);
+        await env.EVENT_TRACK_DB.prepare(
+          `UPDATE osrs_rules SET ${updates.join(", ")} WHERE id = ?`
+        ).bind(...values).run();
+        
+        return new Response(JSON.stringify({ success: true }), { 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), { 
+          status: 500, 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      }
+    }
+
+    /**
+     * DELETE /osrs/rules/:id - Delete an automation rule
+     */
+    if (method === "DELETE" && url.pathname.match(/^\/osrs\/rules\/\d+$/)) {
+      try {
+        const id = url.pathname.split("/").pop();
+        await env.EVENT_TRACK_DB.prepare(`DELETE FROM osrs_rules WHERE id = ?`).bind(id).run();
+        return new Response(JSON.stringify({ success: true }), { 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), { 
+          status: 500, 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      }
+    }
+
+    /**
+     * GET /osrs/watchlist - Get player watchlist
+     */
+    if (method === "GET" && url.pathname === "/osrs/watchlist") {
+      try {
+        await initOsrsTables(env.EVENT_TRACK_DB);
+        const { results: watchlist } = await env.EVENT_TRACK_DB.prepare(
+          `SELECT * FROM osrs_watchlist ORDER BY added_at DESC`
+        ).all();
+        return new Response(JSON.stringify({ watchlist }), { 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), { 
+          status: 500, 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      }
+    }
+
+    /**
+     * POST /osrs/watchlist - Add player to watchlist
+     * Body: { username: "PlayerName", data_sources: ["WISEOLDMAN"], notify_webhook: "..." }
+     */
+    if (method === "POST" && url.pathname === "/osrs/watchlist") {
+      try {
+        await initOsrsTables(env.EVENT_TRACK_DB);
+        const { username, data_sources, notify_webhook } = await request.json();
+        
+        if (!username) {
+          return new Response(JSON.stringify({ error: "Username required" }), { 
+            status: 400, 
+            headers: { ...corsHeaders, "Content-Type": "application/json" } 
+          });
+        }
+        
+        await env.EVENT_TRACK_DB.prepare(`
+          INSERT INTO osrs_watchlist (username, data_sources, notify_webhook) VALUES (?, ?, ?)
+          ON CONFLICT(username) DO UPDATE SET data_sources = ?, notify_webhook = ?
+        `).bind(
+          username, 
+          JSON.stringify(data_sources || ["WISEOLDMAN"]), 
+          notify_webhook || "",
+          JSON.stringify(data_sources || ["WISEOLDMAN"]), 
+          notify_webhook || ""
+        ).run();
+        
+        return new Response(JSON.stringify({ success: true, username }), { 
+          status: 201, 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), { 
+          status: 500, 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      }
+    }
+
+    /**
+     * DELETE /osrs/watchlist/:username - Remove player from watchlist
+     */
+    if (method === "DELETE" && url.pathname.startsWith("/osrs/watchlist/")) {
+      try {
+        const username = decodeURIComponent(url.pathname.split("/").pop());
+        await env.EVENT_TRACK_DB.prepare(`DELETE FROM osrs_watchlist WHERE username = ?`).bind(username).run();
+        return new Response(JSON.stringify({ success: true }), { 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), { 
+          status: 500, 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      }
+    }
+
+    /**
+     * GET /osrs/logs - Get automation execution logs
+     * Query: ?limit=50&rule_id=123
+     */
+    if (method === "GET" && url.pathname === "/osrs/logs") {
+      try {
+        await initOsrsTables(env.EVENT_TRACK_DB);
+        const limit = parseInt(url.searchParams.get("limit") || "50");
+        const ruleId = url.searchParams.get("rule_id");
+        
+        let query = `SELECT * FROM osrs_logs ORDER BY executed_at DESC LIMIT ?`;
+        let stmt = env.EVENT_TRACK_DB.prepare(query).bind(limit);
+        
+        if (ruleId) {
+          query = `SELECT * FROM osrs_logs WHERE rule_id = ? ORDER BY executed_at DESC LIMIT ?`;
+          stmt = env.EVENT_TRACK_DB.prepare(query).bind(ruleId, limit);
+        }
+        
+        const { results: logs } = await stmt.all();
+        
+        return new Response(JSON.stringify({ 
+          count: logs.length,
+          logs: logs.map(l => ({
+            ...l,
+            trigger_data: JSON.parse(l.trigger_data || "{}"),
+            action_result: JSON.parse(l.action_result || "{}")
+          }))
+        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), { 
+          status: 500, 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        });
+      }
+    }
+
+    /**
+     * GET /osrs/triggers - List available trigger types
+     * Query: ?source=GROUPIRON (optional filter)
+     */
+    if (method === "GET" && url.pathname === "/osrs/triggers") {
+      const source = url.searchParams.get("source");
+      const triggers = Object.entries(OSRS_TRIGGER_TYPES)
+        .filter(([k, v]) => !source || v.source === source)
+        .map(([k, v]) => ({ 
+          type: k, 
+          source: v.source, 
+          name: v.name, 
+          description: v.description, 
+          config: v.config 
+        }));
+      return new Response(JSON.stringify({ triggers }), { 
+        headers: { ...corsHeaders, "Content-Type": "application/json" } 
+      });
+    }
+
+    /**
+     * GET /osrs/actions - List available action types
+     */
+    if (method === "GET" && url.pathname === "/osrs/actions") {
+      const actions = Object.entries(OSRS_ACTION_TYPES)
+        .map(([k, v]) => ({ 
+          type: k, 
+          name: v.name, 
+          description: v.description, 
+          config: v.config 
+        }));
+      return new Response(JSON.stringify({ actions }), { 
+        headers: { ...corsHeaders, "Content-Type": "application/json" } 
+      });
+    }
+
+    /**
+     * GET /osrs/sources - List available data sources
+     */
+    if (method === "GET" && url.pathname === "/osrs/sources") {
+      return new Response(JSON.stringify({ 
+        sources: OSRS_APIS,
+        _note: "Use these sources when creating rules or polling"
+      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
     // --- Default Fallback ---

@@ -70,7 +70,14 @@
 		// R2 Public URL for Discord webhooks (enable public access in Cloudflare dashboard)
 		// Go to R2 > yume-submissions > Settings > Public access > Enable
 		// Then copy the public URL (e.g., https://pub-xxxxx.r2.dev)
-		"R2_PUBLIC_URL": "https://imgs.ironforged-events.emuy.gg"
+		"R2_PUBLIC_URL": "https://imgs.ironforged-events.emuy.gg",
+		
+		// OSRS API Configuration
+		// GroupIron.men group token (get from RuneLite Group Ironman plugin)
+		// Set via: npx wrangler secret put GROUPIRON_TOKEN
+		// Optional: Wise Old Man API key for higher rate limits
+		// Set via: npx wrangler secret put WOM_API_KEY
+		"OSRS_API_ENABLED": "true"
 	},
 
 	/**
