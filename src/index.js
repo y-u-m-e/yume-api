@@ -1157,8 +1157,8 @@ export default {
     const allowedUsersCruddy = (env.ALLOWED_USER_IDS_CRUDDY || "").split(",").map(id => id.trim()).filter(Boolean);
     const allowedUsersGeneral = (env.ALLOWED_USER_IDS || "").split(",").map(id => id.trim()).filter(Boolean);
     
-    // Helper: Get user info from D1 database (legacy compatibility)
-    // Note: Actual permissions now come from RBAC system
+    // Helper: Get basic user info from D1 database
+    // Note: Actual permissions now come from RBAC system - this just checks if user exists and is banned
     const getUserPermissions = async (userId) => {
       try {
         const result = await env.EVENT_TRACK_DB.prepare(`
@@ -1168,52 +1168,14 @@ export default {
         if (result) {
           return {
             found: true,
-            isAdmin: ADMIN_USER_IDS.includes(userId), // Admin status from hardcoded list or RBAC
-            isBanned: result.is_banned === 1,
-            access: {
-              // Legacy access checks - now handled by RBAC
-              cruddy: true,
-              docs: true,
-              devops: true,
-              infographic: true,
-              events: true
-            }
+            isAdmin: ADMIN_USER_IDS.includes(userId), // Only hardcoded super admins
+            isBanned: result.is_banned === 1
           };
         }
-        return { found: false };
+        return { found: false, isAdmin: false, isBanned: false };
       } catch (e) {
         console.error("Error fetching user permissions:", e);
-        return { found: false };
-      }
-    };
-    
-    // Helper to check if user has access to a feature (checks D1 first, then env fallback)
-    const hasAccess = async (userId, feature) => {
-      // Super admins always have access
-      if (ADMIN_USER_IDS.includes(userId)) return true;
-      
-      // Check D1 database first
-      const perms = await getUserPermissions(userId);
-      
-      // If user is banned, deny all access
-      if (perms.isBanned) return false;
-      
-      // If user is admin, grant all access
-      if (perms.isAdmin) return true;
-      
-      // If user found in D1, use those permissions
-      if (perms.found) {
-        return perms.access[feature] === true;
-      }
-      
-      // Fallback to legacy env-based whitelist
-      switch (feature) {
-        case 'docs': return allowedUsersDocs.includes(userId);
-        case 'cruddy': return allowedUsersCruddy.includes(userId);
-        case 'devops': return allowedUsersGeneral.includes(userId);
-        case 'infographic': return allowedUsersCruddy.includes(userId);
-        case 'events': return allowedUsersGeneral.includes(userId);
-        default: return allowedUsersGeneral.includes(userId);
+        return { found: false, isAdmin: false, isBanned: false };
       }
     };
     
@@ -1244,6 +1206,32 @@ export default {
         console.error('Error checking RBAC permission:', err);
         return false;
       }
+    };
+    
+    // Helper to check if user has access to a feature (now uses RBAC permissions)
+    const hasAccess = async (userId, feature) => {
+      // Super admins always have access
+      if (ADMIN_USER_IDS.includes(userId)) return true;
+      
+      // Check if user is banned
+      const userInfo = await getUserPermissions(userId);
+      if (userInfo.isBanned) return false;
+      
+      // Map feature names to RBAC permission IDs
+      const featureToPermission = {
+        'docs': 'view_docs',
+        'cruddy': 'view_cruddy',
+        'devops': 'view_devops',
+        'infographic': 'view_cruddy', // Same as cruddy
+        'events': 'view_events',
+        'events_admin': 'view_events_admin'
+      };
+      
+      const permissionId = featureToPermission[feature];
+      if (!permissionId) return false;
+      
+      // Check RBAC permission
+      return await hasRbacPermission(userId, permissionId);
     };
 
     // --- HMAC Token Signing ---
@@ -1772,6 +1760,7 @@ export default {
             ['manage_roles', 'Manage Roles', 'Create and edit roles', 'admin'],
             ['view_logs', 'View Activity Logs', 'Access to activity logs', 'admin'],
             ['view_architecture', 'View Architecture', 'Access to architecture diagrams', 'docs'],
+            ['view_dashboard', 'View Dashboard', 'Access to the main dashboard', 'general'],
           ];
           for (const [id, name, desc, category] of defaultPermissions) {
             await env.EVENT_TRACK_DB.prepare(
@@ -1802,16 +1791,16 @@ export default {
             // Event Participant - can participate in events (auto-assigned to events site users)
             ['event_participant', 'view_events'],
             ['event_participant', 'participate_events'],
-            ['event_participant', 'view_architecture'],
             // Member - basic access
             ['member', 'view_events'],
             ['member', 'participate_events'],
-            ['member', 'view_architecture'],
+            ['member', 'view_dashboard'],
             // Clan Officer - attendance
             ['clan_officer', 'view_cruddy'],
             ['clan_officer', 'edit_cruddy'],
             ['clan_officer', 'view_docs'],
             ['clan_officer', 'view_architecture'],
+            ['clan_officer', 'view_dashboard'],
             // Event Host - events
             ['event_host', 'view_cruddy'],
             ['event_host', 'edit_cruddy'],
@@ -1819,6 +1808,7 @@ export default {
             ['event_host', 'view_events_admin'],
             ['event_host', 'approve_submissions'],
             ['event_host', 'view_architecture'],
+            ['event_host', 'view_dashboard'],
             // Developer - everything except admin
             ['developer', 'view_cruddy'],
             ['developer', 'edit_cruddy'],
@@ -1831,6 +1821,7 @@ export default {
             ['developer', 'approve_submissions'],
             ['developer', 'view_architecture'],
             ['developer', 'view_logs'],
+            ['developer', 'view_dashboard'],
             // Super Admin - everything
             ['super_admin', 'view_cruddy'],
             ['super_admin', 'edit_cruddy'],
@@ -1846,6 +1837,7 @@ export default {
             ['super_admin', 'manage_roles'],
             ['super_admin', 'view_logs'],
             ['super_admin', 'view_architecture'],
+            ['super_admin', 'view_dashboard'],
           ];
           for (const [roleId, permId] of rolePerms) {
             await env.EVENT_TRACK_DB.prepare(
@@ -1878,8 +1870,13 @@ export default {
         await env.EVENT_TRACK_DB.prepare(
           `INSERT OR IGNORE INTO rbac_role_permissions (role_id, permission_id) VALUES ('event_participant', 'participate_events')`
         ).run();
+        // Remove view_architecture from event_participant (migration fix)
         await env.EVENT_TRACK_DB.prepare(
-          `INSERT OR IGNORE INTO rbac_role_permissions (role_id, permission_id) VALUES ('event_participant', 'view_architecture')`
+          `DELETE FROM rbac_role_permissions WHERE role_id = 'event_participant' AND permission_id = 'view_architecture'`
+        ).run();
+        // Add view_dashboard permission to database
+        await env.EVENT_TRACK_DB.prepare(
+          `INSERT OR IGNORE INTO rbac_permissions (id, name, description, category) VALUES ('view_dashboard', 'View Dashboard', 'Access to the main dashboard', 'general')`
         ).run();
         
         const result = await env.EVENT_TRACK_DB.prepare(`
@@ -4008,6 +4005,36 @@ You don't have permission to view this content. Contact an administrator if you 
         // Column already exists, ignore
       }
       
+      // Add required_submissions column to tiles (default 1)
+      // This allows tiles to require multiple approved submissions before unlocking
+      try {
+        await env.EVENT_TRACK_DB.prepare(`
+          ALTER TABLE tile_event_tiles ADD COLUMN required_submissions INTEGER DEFAULT 1
+        `).run();
+      } catch (e) {
+        // Column already exists, ignore
+      }
+      
+      // Add skips_used column to progress table
+      // Tracks how many skips user has used (earn 1 at start, 1 more after 10 tiles)
+      try {
+        await env.EVENT_TRACK_DB.prepare(`
+          ALTER TABLE tile_event_progress ADD COLUMN skips_used INTEGER DEFAULT 0
+        `).run();
+      } catch (e) {
+        // Column already exists, ignore
+      }
+      
+      // Add tile_position column to submissions table
+      // Stores position for stable reference even after tile IDs change during bulk updates
+      try {
+        await env.EVENT_TRACK_DB.prepare(`
+          ALTER TABLE tile_submissions ADD COLUMN tile_position INTEGER DEFAULT 0
+        `).run();
+      } catch (e) {
+        // Column already exists, ignore
+      }
+      
       // Add required_keyword column to events if it doesn't exist
       // This is the mandatory phrase that must appear in all submissions for this event
       try {
@@ -4432,6 +4459,110 @@ You don't have permission to view this content. Contact an administrator if you 
       }
     }
 
+    // --- POST /tile-events/:id/skip - Skip current tile ---
+    if (method === "POST" && url.pathname.match(/^\/tile-events\/\d+\/skip$/)) {
+      const eventId = parseInt(url.pathname.split('/')[2]);
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
+      
+      if (!token) {
+        return new Response(JSON.stringify({ error: "Authentication required" }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      const user = await verifyToken(token);
+      if (!user) {
+        return new Response(JSON.stringify({ error: "Invalid token" }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initTileEventTables();
+        
+        // Get user's progress
+        const progress = await env.EVENT_TRACK_DB.prepare(`
+          SELECT * FROM tile_event_progress WHERE event_id = ? AND discord_id = ?
+        `).bind(eventId, user.userId).first();
+        
+        if (!progress) {
+          return new Response(JSON.stringify({ error: "Not joined this event" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        const unlockedTiles = JSON.parse(progress.tiles_unlocked || '[]');
+        const skipsUsed = progress.skips_used || 0;
+        const tilesCompleted = unlockedTiles.length;
+        
+        // Calculate available skips: 1 at start + 1 after 10 tiles
+        const maxSkips = tilesCompleted >= 10 ? 2 : 1;
+        const skipsAvailable = maxSkips - skipsUsed;
+        
+        if (skipsAvailable <= 0) {
+          return new Response(JSON.stringify({ error: "No skips available" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Get the next tile to skip
+        const body = await request.json();
+        const tilePosition = body.tile_position;
+        
+        if (tilePosition === undefined || unlockedTiles.includes(tilePosition)) {
+          return new Response(JSON.stringify({ error: "Invalid tile to skip" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        // Add tile to unlocked and increment skips used
+        unlockedTiles.push(tilePosition);
+        const newCurrentTile = Math.max(...unlockedTiles, 0);
+        
+        // Check if completed
+        const totalTiles = await env.EVENT_TRACK_DB.prepare(`
+          SELECT COUNT(*) as count FROM tile_event_tiles WHERE event_id = ?
+        `).bind(eventId).first();
+        
+        const completedAt = unlockedTiles.length >= (totalTiles?.count || 0) 
+          ? new Date().toISOString() 
+          : null;
+        
+        await env.EVENT_TRACK_DB.prepare(`
+          UPDATE tile_event_progress 
+          SET tiles_unlocked = ?, current_tile = ?, skips_used = ?, completed_at = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE event_id = ? AND discord_id = ?
+        `).bind(JSON.stringify(unlockedTiles), newCurrentTile, skipsUsed + 1, completedAt, eventId, user.userId).run();
+        
+        // Log activity
+        await logActivity(user.userId, user.username, 'tile_skip', {
+          event_id: eventId,
+          tile_position: tilePosition,
+          skips_remaining: skipsAvailable - 1
+        });
+        
+        return new Response(JSON.stringify({ 
+          success: true,
+          skips_remaining: skipsAvailable - 1,
+          tiles_unlocked: unlockedTiles
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error using skip:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
     // ========================================
     // TILE SUBMISSION SYSTEM (Screenshot Verification)
     // ========================================
@@ -4465,14 +4596,14 @@ You don't have permission to view this content. Contact an administrator if you 
         const canBypassRateLimit = await hasRbacPermission(user.userId, 'approve_submissions');
         if (!canBypassRateLimit) {
           const lastSubmission = await env.EVENT_TRACK_DB.prepare(`
-            SELECT submitted_at FROM tile_submissions 
+            SELECT created_at FROM tile_submissions 
             WHERE discord_id = ? 
-            ORDER BY submitted_at DESC 
+            ORDER BY created_at DESC 
             LIMIT 1
           `).bind(user.userId).first();
           
           if (lastSubmission) {
-            const lastSubmitTime = new Date(lastSubmission.submitted_at).getTime();
+            const lastSubmitTime = new Date(lastSubmission.created_at).getTime();
             const now = Date.now();
             const secondsSinceLastSubmit = (now - lastSubmitTime) / 1000;
             
@@ -4535,14 +4666,20 @@ You don't have permission to view this content. Contact an administrator if you 
         
         // All tiles are accessible (no sequential requirement)
         
-        // Check for pending submission
-        const pendingSubmission = await env.EVENT_TRACK_DB.prepare(`
-          SELECT * FROM tile_submissions 
-          WHERE event_id = ? AND tile_id = ? AND discord_id = ? AND status = 'pending'
-        `).bind(eventId, tileId, user.userId).first();
+        // For multi-submission tiles, check if user has already submitted enough
+        // Use tile_position for stable counting even after bulk tile updates
+        const requiredSubmissions = tile.required_submissions || 1;
+        const submissionCount = await env.EVENT_TRACK_DB.prepare(`
+          SELECT COUNT(*) as count FROM tile_submissions 
+          WHERE event_id = ? AND tile_position = ? AND discord_id = ? AND status != 'rejected'
+        `).bind(eventId, tile.position, user.userId).first();
         
-        if (pendingSubmission) {
-          return new Response(JSON.stringify({ error: "You already have a pending submission for this tile" }), {
+        const currentSubmissions = submissionCount?.count || 0;
+        
+        if (currentSubmissions >= requiredSubmissions) {
+          return new Response(JSON.stringify({ 
+            error: `You've already submitted ${currentSubmissions}/${requiredSubmissions} for this tile. Waiting for admin review.` 
+          }), {
             status: 400,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
@@ -4751,20 +4888,31 @@ You don't have permission to view this content. Contact an administrator if you 
         const status = autoApproved ? 'approved' : 'pending';
         await env.EVENT_TRACK_DB.prepare(`
           INSERT INTO tile_submissions (
-            event_id, tile_id, discord_id, discord_username, 
+            event_id, tile_id, tile_position, discord_id, discord_username, 
             image_key, image_url, status, ocr_text, ai_confidence, ai_result
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
-          eventId, tileId, user.userId, user.username,
+          eventId, tileId, tile.position, user.userId, user.username,
           imageKey, imageUrl, status, ocrText, aiConfidence, aiResult
         ).run();
         
-        // Always unlock the tile on submission (allows continuous flow)
-        // Admins can review and step users back if submissions are rejected
-        unlockedTiles.push(tile.position);
-        const newCurrentTile = Math.max(...unlockedTiles, 0);
+        // Check if tile should be unlocked based on total submission count (pending or approved)
+        // Re-count after insert to include the new submission
+        const postSubmitCount = await env.EVENT_TRACK_DB.prepare(`
+          SELECT COUNT(*) as count FROM tile_submissions 
+          WHERE event_id = ? AND tile_position = ? AND discord_id = ? AND status != 'rejected'
+        `).bind(eventId, tile.position, user.userId).first();
         
-        // Check if completed
+        const hasEnoughSubmissions = (postSubmitCount?.count || 0) >= requiredSubmissions;
+        
+        // Unlock tile if user has enough submissions (pending or approved)
+        if (hasEnoughSubmissions && !unlockedTiles.includes(tile.position)) {
+          unlockedTiles.push(tile.position);
+        }
+        
+        const newCurrentTile = unlockedTiles.length > 0 ? Math.max(...unlockedTiles, 0) : 0;
+        
+        // Check if completed (all tiles unlocked)
         const totalTiles = await env.EVENT_TRACK_DB.prepare(`
           SELECT COUNT(*) as count FROM tile_event_tiles WHERE event_id = ?
         `).bind(eventId).first();
@@ -4857,15 +5005,50 @@ You don't have permission to view this content. Contact an administrator if you 
       try {
         await initTileEventTables();
         
+        // Use tile_position for stable lookups after bulk tile updates
         const submissions = await env.EVENT_TRACK_DB.prepare(`
-          SELECT ts.*, t.title as tile_title, t.position as tile_position
+          SELECT ts.*, 
+                 COALESCE(t.title, 'Tile ' || (ts.tile_position + 1)) as tile_title,
+                 ts.tile_position as tile_position,
+                 t.id as current_tile_id
           FROM tile_submissions ts
-          JOIN tile_event_tiles t ON ts.tile_id = t.id
+          LEFT JOIN tile_event_tiles t ON ts.event_id = t.event_id AND ts.tile_position = t.position
           WHERE ts.event_id = ? AND ts.discord_id = ?
           ORDER BY ts.created_at DESC
         `).bind(eventId, user.userId).all();
         
-        return new Response(JSON.stringify({ submissions: submissions.results || [] }), {
+        // Include submission counts per tile for multi-submission support
+        // Count all non-rejected submissions (pending + approved) by tile_position
+        // Using tile_position ensures counts survive bulk tile updates
+        const submissionCounts = await env.EVENT_TRACK_DB.prepare(`
+          SELECT tile_position, 
+                 COUNT(*) as total_count,
+                 SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) as approved_count
+          FROM tile_submissions 
+          WHERE event_id = ? AND discord_id = ? AND status != 'rejected'
+          GROUP BY tile_position
+        `).bind(eventId, user.userId).all();
+        
+        // Get required submissions per tile (with position and id)
+        const tileRequirements = await env.EVENT_TRACK_DB.prepare(`
+          SELECT id, position, required_submissions FROM tile_event_tiles WHERE event_id = ?
+        `).bind(eventId).all();
+        
+        // Build a map of tile progress keyed by tile ID (for frontend compatibility)
+        const tileProgress = {};
+        for (const tile of (tileRequirements.results || [])) {
+          const counts = (submissionCounts.results || []).find(c => c.tile_position === tile.position);
+          tileProgress[tile.id] = {
+            submitted: counts?.total_count || 0,  // Total non-rejected submissions
+            approved: counts?.approved_count || 0, // Approved submissions
+            required: tile.required_submissions || 1
+          };
+        }
+        
+        return new Response(JSON.stringify({ 
+          submissions: submissions.results || [],
+          tileProgress
+        }), {
           status: 200,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
         });
@@ -4900,10 +5083,12 @@ You don't have permission to view this content. Contact an administrator if you 
         const offset = parseInt(url.searchParams.get('offset') || '0');
         
         let query = `
-          SELECT ts.*, t.title as tile_title, t.position as tile_position,
-                 u.global_name, u.avatar
+          SELECT ts.*, 
+                 COALESCE(t.title, 'Tile #' || (ts.tile_id)) as tile_title, 
+                 COALESCE(t.position, 0) as tile_position,
+                 u.global_name, u.avatar, u.rsn, u.username
           FROM tile_submissions ts
-          JOIN tile_event_tiles t ON ts.tile_id = t.id
+          LEFT JOIN tile_event_tiles t ON ts.tile_id = t.id
           LEFT JOIN users u ON ts.discord_id = u.discord_id
           WHERE ts.event_id = ?
         `;
@@ -4971,11 +5156,11 @@ You don't have permission to view this content. Contact an administrator if you 
           });
         }
         
-        // Get submission details
+        // Get submission details with tile info
         const submission = await env.EVENT_TRACK_DB.prepare(`
-          SELECT ts.*, t.position as tile_position
+          SELECT ts.*, t.position as tile_position, t.required_submissions
           FROM tile_submissions ts
-          JOIN tile_event_tiles t ON ts.tile_id = t.id
+          LEFT JOIN tile_event_tiles t ON ts.tile_id = t.id
           WHERE ts.id = ?
         `).bind(submissionId).first();
         
@@ -4998,23 +5183,49 @@ You don't have permission to view this content. Contact an administrator if you 
           SELECT * FROM tile_event_progress WHERE event_id = ? AND discord_id = ?
         `).bind(submission.event_id, submission.discord_id).first();
         
+        let progressMessage = '';
+        
         if (progress) {
           let unlockedTiles = JSON.parse(progress.tiles_unlocked || '[]');
           let progressChanged = false;
           
           if (status === 'approved') {
-            // Ensure tile is unlocked (it should already be, but just in case)
-            if (!unlockedTiles.includes(submission.tile_position)) {
+            // Check if user now has enough approved submissions for this tile
+            const requiredSubmissions = submission.required_submissions || 1;
+            const approvedCount = await env.EVENT_TRACK_DB.prepare(`
+              SELECT COUNT(*) as count FROM tile_submissions 
+              WHERE event_id = ? AND tile_id = ? AND discord_id = ? AND status = 'approved'
+            `).bind(submission.event_id, submission.tile_id, submission.discord_id).first();
+            
+            const hasEnoughApprovals = (approvedCount?.count || 0) >= requiredSubmissions;
+            
+            if (hasEnoughApprovals && !unlockedTiles.includes(submission.tile_position)) {
               unlockedTiles.push(submission.tile_position);
               progressChanged = true;
+              progressMessage = ` Tile unlocked (${approvedCount?.count}/${requiredSubmissions} submissions).`;
+            } else if (!hasEnoughApprovals) {
+              progressMessage = ` Progress: ${approvedCount?.count}/${requiredSubmissions} submissions.`;
             }
           } else if (status === 'rejected') {
-            // STEP BACK: Remove the tile from user's progress
-            // Also remove any tiles after this one (they shouldn't have been accessible)
-            const rejectedPosition = submission.tile_position;
-            const originalLength = unlockedTiles.length;
-            unlockedTiles = unlockedTiles.filter(pos => pos < rejectedPosition);
-            progressChanged = unlockedTiles.length !== originalLength;
+            // Check if user still has enough approved submissions after rejection
+            const requiredSubmissions = submission.required_submissions || 1;
+            const approvedCount = await env.EVENT_TRACK_DB.prepare(`
+              SELECT COUNT(*) as count FROM tile_submissions 
+              WHERE event_id = ? AND tile_id = ? AND discord_id = ? AND status = 'approved'
+            `).bind(submission.event_id, submission.tile_id, submission.discord_id).first();
+            
+            const hasEnoughApprovals = (approvedCount?.count || 0) >= requiredSubmissions;
+            
+            // If user no longer has enough approvals and tile was unlocked, remove it
+            if (!hasEnoughApprovals && unlockedTiles.includes(submission.tile_position)) {
+              const rejectedPosition = submission.tile_position;
+              const originalLength = unlockedTiles.length;
+              unlockedTiles = unlockedTiles.filter(pos => pos < rejectedPosition);
+              progressChanged = unlockedTiles.length !== originalLength;
+              progressMessage = ` User stepped back (${approvedCount?.count}/${requiredSubmissions} submissions remain).`;
+            } else if (hasEnoughApprovals) {
+              progressMessage = ` Tile still unlocked (${approvedCount?.count}/${requiredSubmissions} submissions).`;
+            }
           }
           
           if (progressChanged) {
@@ -5036,11 +5247,9 @@ You don't have permission to view this content. Contact an administrator if you 
             `).bind(JSON.stringify(unlockedTiles), newCurrentTile, completedAt, submission.event_id, submission.discord_id).run();
           }
         }
-        
-        const stepBackMsg = status === 'rejected' ? ' User stepped back to previous tile.' : '';
         return new Response(JSON.stringify({ 
           success: true,
-          message: `Submission ${status}.${stepBackMsg}`
+          message: `Submission ${status}.${progressMessage}`
         }), {
           status: 200,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -5541,13 +5750,14 @@ You don't have permission to view this content. Contact an administrator if you 
           const description = sanitizeString(tile.description || '', 500);
           const imageUrl = sanitizeString(tile.image_url || '', 500);
           const unlockKeywords = sanitizeString(tile.unlock_keywords || '', 500);
+          const requiredSubmissions = parseInt(tile.required_submissions) || 1;
           const isStart = tile.is_start ? 1 : 0;
           const isEnd = tile.is_end ? 1 : 0;
           
           await env.EVENT_TRACK_DB.prepare(`
-            INSERT INTO tile_event_tiles (event_id, position, title, description, image_url, is_start, is_end, unlock_keywords)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-          `).bind(eventId, position, title, description, imageUrl, isStart, isEnd, unlockKeywords).run();
+            INSERT INTO tile_event_tiles (event_id, position, title, description, image_url, is_start, is_end, unlock_keywords, required_submissions)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(eventId, position, title, description, imageUrl, isStart, isEnd, unlockKeywords, requiredSubmissions).run();
         }
         
         return new Response(JSON.stringify({ success: true, count: tiles.length }), {
@@ -5592,13 +5802,14 @@ You don't have permission to view this content. Contact an administrator if you 
           const description = sanitizeString(tile.description || '', 500);
           const imageUrl = sanitizeString(tile.image_url || '', 500);
           const unlockKeywords = sanitizeString(tile.unlock_keywords || '', 500);
+          const requiredSubmissions = parseInt(tile.required_submissions) || 1;
           const isStart = i === 0 ? 1 : 0;
           const isEnd = i === tiles.length - 1 ? 1 : 0;
           
           await env.EVENT_TRACK_DB.prepare(`
-            INSERT INTO tile_event_tiles (event_id, position, title, description, image_url, is_start, is_end, unlock_keywords)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-          `).bind(eventId, position, title, description, imageUrl, isStart, isEnd, unlockKeywords).run();
+            INSERT INTO tile_event_tiles (event_id, position, title, description, image_url, is_start, is_end, unlock_keywords, required_submissions)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(eventId, position, title, description, imageUrl, isStart, isEnd, unlockKeywords, requiredSubmissions).run();
         }
         
         return new Response(JSON.stringify({ success: true, count: tiles.length }), {
@@ -5631,7 +5842,7 @@ You don't have permission to view this content. Contact an administrator if you 
         await initTileEventTables();
         
         const participants = await env.EVENT_TRACK_DB.prepare(`
-          SELECT tep.*, u.username, u.global_name, u.avatar
+          SELECT tep.*, u.username, u.global_name, u.avatar, u.rsn
           FROM tile_event_progress tep
           LEFT JOIN users u ON tep.discord_id = u.discord_id
           WHERE tep.event_id = ?
@@ -5872,6 +6083,86 @@ You don't have permission to view this content. Contact an administrator if you 
       }
     }
 
+    // --- Admin: PUT /admin/tile-events/:id/participants/:discordId/skips - Adjust user's skips ---
+    if (method === "PUT" && url.pathname.match(/^\/admin\/tile-events\/\d+\/participants\/[^\/]+\/skips$/)) {
+      const parts = url.pathname.split('/');
+      const eventId = parseInt(parts[3]);
+      const discordId = decodeURIComponent(parts[5]);
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !await hasAccess(user.userId, 'events')) {
+        return new Response(JSON.stringify({ error: "Admin access required" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initTileEventTables();
+        const body = await request.json();
+        const skipsUsed = parseInt(body.skips_used) || 0;
+        
+        await env.EVENT_TRACK_DB.prepare(`
+          UPDATE tile_event_progress 
+          SET skips_used = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE event_id = ? AND discord_id = ?
+        `).bind(Math.max(0, skipsUsed), eventId, discordId).run();
+        
+        return new Response(JSON.stringify({ success: true, skips_used: skipsUsed }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error adjusting skips:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
+    // --- Admin: GET /admin/tile-events/:id/participants/:discordId/tiles/:position/submissions ---
+    if (method === "GET" && url.pathname.match(/^\/admin\/tile-events\/\d+\/participants\/[^\/]+\/tiles\/\d+\/submissions$/)) {
+      const parts = url.pathname.split('/');
+      const eventId = parseInt(parts[3]);
+      const discordId = decodeURIComponent(parts[5]);
+      const tilePosition = parseInt(parts[7]);
+      const token = request.headers.get("Cookie")?.match(/yume_auth=([^;]+)/)?.[1];
+      const user = token ? await verifyToken(token) : null;
+      
+      if (!user || !await hasAccess(user.userId, 'events')) {
+        return new Response(JSON.stringify({ error: "Admin access required" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      try {
+        await initTileEventTables();
+        
+        // Get submissions for this user on this tile (by position)
+        const submissions = await env.EVENT_TRACK_DB.prepare(`
+          SELECT ts.*, t.title as tile_title
+          FROM tile_submissions ts
+          LEFT JOIN tile_event_tiles t ON ts.tile_id = t.id
+          WHERE ts.event_id = ? AND ts.discord_id = ? AND ts.tile_position = ?
+          ORDER BY ts.created_at DESC
+        `).bind(eventId, discordId, tilePosition).all();
+        
+        return new Response(JSON.stringify({ submissions: submissions.results || [] }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        console.error("Error fetching tile submissions:", err);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    }
+
     // --- Admin: POST /admin/tile-events/:id/sync-sheet - Sync tiles from Google Sheet ---
     if (method === "POST" && url.pathname.match(/^\/admin\/tile-events\/\d+\/sync-sheet$/)) {
       const eventId = parseInt(url.pathname.split('/')[3]);
@@ -5935,7 +6226,7 @@ You don't have permission to view this content. Contact an administrator if you 
         await env.EVENT_TRACK_DB.prepare(`DELETE FROM tile_event_tiles WHERE event_id = ?`).bind(eventId).run();
         
         // Insert tiles from sheet
-        // Expected columns: A=Title, B=Description, C=ImageURL, D=Keywords (for AI auto-approval)
+        // Expected columns: A=Title, B=Description, C=ImageURL, D=Keywords (for AI auto-approval), E=Required Submissions
         let insertedCount = 0;
         for (let i = 0; i < dataRows.length; i++) {
           const row = dataRows[i];
@@ -5947,13 +6238,14 @@ You don't have permission to view this content. Contact an administrator if you 
           const description = sanitizeString(row[1] || '', 500);
           const imageUrl = sanitizeString(row[2] || '', 500);
           const unlockKeywords = sanitizeString(row[3] || '', 500);
+          const requiredSubmissions = parseInt(row[4]) || 1;
           const isStart = i === 0 ? 1 : 0;
           const isEnd = i === dataRows.length - 1 ? 1 : 0;
           
           await env.EVENT_TRACK_DB.prepare(`
-            INSERT INTO tile_event_tiles (event_id, position, title, description, image_url, is_start, is_end, unlock_keywords)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-          `).bind(eventId, i, title, description, imageUrl, isStart, isEnd, unlockKeywords).run();
+            INSERT INTO tile_event_tiles (event_id, position, title, description, image_url, is_start, is_end, unlock_keywords, required_submissions)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(eventId, i, title, description, imageUrl, isStart, isEnd, unlockKeywords, requiredSubmissions).run();
           
           insertedCount++;
         }
