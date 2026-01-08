@@ -4439,13 +4439,35 @@ You don't have permission to view this content. Contact an administrator if you 
       try {
         await initTileEventTables();
         
+        // Get all submissions for this user in this event (to delete R2 images)
+        const submissions = await env.EVENT_TRACK_DB.prepare(`
+          SELECT image_key FROM tile_submissions WHERE event_id = ? AND discord_id = ?
+        `).bind(eventId, user.userId).all();
+        
+        // Delete images from R2
+        for (const sub of (submissions.results || [])) {
+          if (sub.image_key) {
+            try {
+              await env.SUBMISSIONS_BUCKET.delete(sub.image_key);
+            } catch (r2Err) {
+              console.log("Failed to delete R2 object:", r2Err.message);
+            }
+          }
+        }
+        
+        // Delete all submissions for this user in this event
+        await env.EVENT_TRACK_DB.prepare(`
+          DELETE FROM tile_submissions WHERE event_id = ? AND discord_id = ?
+        `).bind(eventId, user.userId).run();
+        
+        // Delete progress
         await env.EVENT_TRACK_DB.prepare(`
           DELETE FROM tile_event_progress WHERE event_id = ? AND discord_id = ?
         `).bind(eventId, user.userId).run();
         
         return new Response(JSON.stringify({ 
           success: true, 
-          message: "Left the event"
+          message: "Left the event and all progress was removed"
         }), {
           status: 200,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -5334,13 +5356,39 @@ You don't have permission to view this content. Contact an administrator if you 
       try {
         await initTileEventTables();
         
-        const result = await env.EVENT_TRACK_DB.prepare(`
+        // Get all submissions for this user in this event (to delete R2 images)
+        const submissions = await env.EVENT_TRACK_DB.prepare(`
+          SELECT image_key FROM tile_submissions WHERE event_id = ? AND discord_id = ?
+        `).bind(eventId, discordId).all();
+        
+        // Delete images from R2
+        let imagesDeleted = 0;
+        for (const sub of (submissions.results || [])) {
+          if (sub.image_key) {
+            try {
+              await env.SUBMISSIONS_BUCKET.delete(sub.image_key);
+              imagesDeleted++;
+            } catch (r2Err) {
+              console.log("Failed to delete R2 object:", r2Err.message);
+            }
+          }
+        }
+        
+        // Delete all submissions for this user in this event
+        const submissionsResult = await env.EVENT_TRACK_DB.prepare(`
+          DELETE FROM tile_submissions WHERE event_id = ? AND discord_id = ?
+        `).bind(eventId, discordId).run();
+        
+        // Delete progress
+        const progressResult = await env.EVENT_TRACK_DB.prepare(`
           DELETE FROM tile_event_progress WHERE event_id = ? AND discord_id = ?
         `).bind(eventId, discordId).run();
         
         return new Response(JSON.stringify({ 
           success: true,
-          removed: result.meta.changes > 0
+          removed: progressResult.meta.changes > 0,
+          submissionsDeleted: submissionsResult.meta.changes,
+          imagesDeleted
         }), {
           status: 200,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
