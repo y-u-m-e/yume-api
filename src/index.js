@@ -4535,8 +4535,19 @@ You don't have permission to view this content. Contact an administrator if you 
         const body = await request.json();
         const tilePosition = body.tile_position;
         
-        if (tilePosition === undefined || unlockedTiles.includes(tilePosition)) {
-          return new Response(JSON.stringify({ error: "Invalid tile to skip" }), {
+        // Calculate the current tile position (must skip the CURRENT tile only)
+        const maxUnlocked = unlockedTiles.length > 0 ? Math.max(...unlockedTiles) : -1;
+        const currentTilePosition = maxUnlocked + 1;
+        
+        if (tilePosition === undefined || tilePosition !== currentTilePosition) {
+          return new Response(JSON.stringify({ error: "Can only skip the current tile" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        
+        if (unlockedTiles.includes(tilePosition)) {
+          return new Response(JSON.stringify({ error: "Tile already completed" }), {
             status: 400,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
@@ -5178,11 +5189,12 @@ You don't have permission to view this content. Contact an administrator if you 
           });
         }
         
-        // Get submission details with tile info
+        // Get submission details with tile info (use tile_position for stable lookup)
         const submission = await env.EVENT_TRACK_DB.prepare(`
-          SELECT ts.*, t.position as tile_position, t.required_submissions
+          SELECT ts.*, t.required_submissions,
+                 COALESCE(ts.tile_position, t.position) as tile_position
           FROM tile_submissions ts
-          LEFT JOIN tile_event_tiles t ON ts.tile_id = t.id
+          LEFT JOIN tile_event_tiles t ON ts.event_id = t.event_id AND ts.tile_position = t.position
           WHERE ts.id = ?
         `).bind(submissionId).first();
         
@@ -5213,11 +5225,12 @@ You don't have permission to view this content. Contact an administrator if you 
           
           if (status === 'approved') {
             // Check if user now has enough approved submissions for this tile
+            // Use tile_position for stable lookup (tile_id can change after bulk updates)
             const requiredSubmissions = submission.required_submissions || 1;
             const approvedCount = await env.EVENT_TRACK_DB.prepare(`
               SELECT COUNT(*) as count FROM tile_submissions 
-              WHERE event_id = ? AND tile_id = ? AND discord_id = ? AND status = 'approved'
-            `).bind(submission.event_id, submission.tile_id, submission.discord_id).first();
+              WHERE event_id = ? AND tile_position = ? AND discord_id = ? AND status = 'approved'
+            `).bind(submission.event_id, submission.tile_position, submission.discord_id).first();
             
             const hasEnoughApprovals = (approvedCount?.count || 0) >= requiredSubmissions;
             
@@ -5230,11 +5243,12 @@ You don't have permission to view this content. Contact an administrator if you 
             }
           } else if (status === 'rejected') {
             // Check if user still has enough approved submissions after rejection
+            // Use tile_position for stable lookup (tile_id can change after bulk updates)
             const requiredSubmissions = submission.required_submissions || 1;
             const approvedCount = await env.EVENT_TRACK_DB.prepare(`
               SELECT COUNT(*) as count FROM tile_submissions 
-              WHERE event_id = ? AND tile_id = ? AND discord_id = ? AND status = 'approved'
-            `).bind(submission.event_id, submission.tile_id, submission.discord_id).first();
+              WHERE event_id = ? AND tile_position = ? AND discord_id = ? AND status = 'approved'
+            `).bind(submission.event_id, submission.tile_position, submission.discord_id).first();
             
             const hasEnoughApprovals = (approvedCount?.count || 0) >= requiredSubmissions;
             
